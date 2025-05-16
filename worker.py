@@ -265,8 +265,9 @@ class GenerationWorker(QThread):
             num_audios = len(audio_chunks)
             with open(audio_list_file, 'w') as f:
                 for i in range(1, num_audios + 1):
+                    path = os.path.abspath(os.path.join(output_dir, f"audio{i}.mp3"))
                     f.write(
-                        f"file '{os.path.abspath(os.path.join(output_dir, f"audio{i}.mp3"))}'\n")
+                        f"file '{path}'\n")
 
             merged_audio = os.path.join(temp_folder_path, 'merged_audio.mp3')
             cmd_concat_audio = [
