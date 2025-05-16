@@ -168,17 +168,7 @@ class VideoGeneratorApp(QMainWindow):
         
         settings_group.setLayout(settings_layout)
         left_layout.addWidget(settings_group)
-        
-        # Save/Load Settings
-        
-        buttons_layout = QGridLayout()
-        buttons_layout.addItem(QSpacerItem(20, 10, QSizePolicy.Expanding, QSizePolicy.Minimum), 0, 0)
-        self.save_settings_btn = QPushButton("Save Settings")
-        self.save_settings_btn.clicked.connect(self.save_settings)
-        buttons_layout.addWidget(self.save_settings_btn, 0, 1)
-        
-        left_layout.addLayout(buttons_layout)
-        
+                        
         # Generate button        
         self.generate_btn = QPushButton("Generate Video")
         self.generate_btn.setFixedHeight(40)
