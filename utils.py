@@ -54,7 +54,8 @@ class OpenAIHelper:
             model=model,
             prompt=prompt,
             size=sizeData[size],
-            quality=quality
+            quality=quality,
+            moderation='low'
         )
         result_b64 = response.data[0].b64_json
         image_data = base64.b64decode(result_b64)
