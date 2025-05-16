@@ -1,7 +1,8 @@
-import sys, log, json, os
+import sys, os
 current_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
 os.chdir(current_directory)
 
+import log, json
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                             QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, 
                             QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy, QMessageBox)
