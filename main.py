@@ -4,7 +4,7 @@ os.chdir(current_directory)
 
 import log, json
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                            QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, 
+                            QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QFileDialog,
                             QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy, QMessageBox)
 from PyQt5.QtCore import Qt
 from utils import get_default_settings, get_settings_filepath
@@ -14,9 +14,7 @@ class VideoGeneratorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.logger = log.setup_logger()
-        self.settings_filepath = get_settings_filepath()
         self.init_ui()
-        self.load_settings()
         
     def init_ui(self):
         self.setWindowTitle('Video Generator')
@@ -38,6 +36,27 @@ class VideoGeneratorApp(QMainWindow):
         # Left panel containing settings
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
+        
+        # Settings Group
+        settings_file_group = QGroupBox('Settings File Path')
+        settings_file_layout = QVBoxLayout()
+        self.settings_filepath_input = QLineEdit()
+        self.settings_filepath_input.setReadOnly(True)
+        settings_file_button_layout = QHBoxLayout()
+        self.settings_save_button = QPushButton("Save Settings")
+        self.settings_load_button = QPushButton("Load Settings")
+        self.settings_save_button.clicked.connect(self.toggle_save_settings)
+        self.settings_load_button.clicked.connect(self.toggle_load_settings)
+
+        spaceItem = QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        settings_file_button_layout.addItem(spaceItem)
+        settings_file_button_layout.addWidget(self.settings_save_button)
+        settings_file_button_layout.addWidget(self.settings_load_button)
+        settings_file_layout.addWidget(self.settings_filepath_input)
+        settings_file_layout.addLayout(settings_file_button_layout)
+        settings_file_group.setLayout(settings_file_layout)
+        left_layout.addWidget(settings_file_group)
+        # self.
         
         # API Key Group
         api_key_group = QGroupBox("OpenAI API Key")
@@ -218,7 +237,7 @@ class VideoGeneratorApp(QMainWindow):
         
         self.logger.info("Application initialized and ready")
     
-    def save_settings(self):
+    def save_settings(self, file_path):
         """Save current settings to a JSON file"""
         try:
             settings = {
@@ -235,31 +254,31 @@ class VideoGeneratorApp(QMainWindow):
                 "thumbnail_word_limit": self.image_chunk_word_limit_spinbox.value()
             }
             
-            with open(self.settings_filepath, 'w') as f:
+            with open(file_path, 'w') as f:
                 json.dump(settings, f, indent=4)
                 
-            self.logger.info(f"Settings saved to {self.settings_filepath}")
+            self.logger.info(f"Settings saved to {file_path}")
             QMessageBox.information(self, "Settings Saved", "Settings have been saved successfully!")
         except Exception as e:
             self.logger.error(f"Error saving settings: {str(e)}")
             QMessageBox.critical(self, "Error", f"Failed to save settings: {str(e)}")
             
-    def load_settings(self):
+    def load_settings(self, file_path):
         """Load settings from JSON file or create default if file doesn't exist"""
         try:
             # Check if settings file exists
-            if not os.path.exists(self.settings_filepath):
+            if not os.path.exists(file_path):
                 # Create default settings
                 default_settings = get_default_settings()
-                with open(self.settings_filepath, 'w') as f:
+                with open(file_path, 'w') as f:
                     json.dump(default_settings, f, indent=4)
-                self.logger.info(f"Created default settings file at {self.settings_filepath}")
+                self.logger.info(f"Created default settings file at {file_path}")
                 settings = default_settings
             else:
                 # Load existing settings
-                with open(self.settings_filepath, 'r') as f:
+                with open(file_path, 'r') as f:
                     settings = json.load(f)
-                self.logger.info(f"Loaded settings from {self.settings_filepath}")
+                self.logger.info(f"Loaded settings from {file_path}")
             
             # Apply settings to UI
             self.api_key_input.setText(settings.get("api_key", ""))
@@ -273,6 +292,8 @@ class VideoGeneratorApp(QMainWindow):
             self.audio_word_limit_spinbox.setValue(settings.get("audio_word_limit", 400))
             self.image_chunk_count_spinbox.setValue(settings.get("image_count", 3))
             self.image_chunk_word_limit_spinbox.setValue(settings.get("image_word_limit", 15))
+            
+            QMessageBox.information(self, "Information", f"Succeed to load settings: {file_path}")
             
         except Exception as e:
             self.logger.error(f"Error loading settings: {str(e)}")
@@ -363,6 +384,22 @@ class VideoGeneratorApp(QMainWindow):
         self.toggle_ui_elements(True)
         self.logger.info("Video generation completed")
         self.progress_bar.setValue(100)
+    
+    def toggle_load_settings(self):
+        file_name, _ = QFileDialog.getOpenFileName(self, 'Open Settings File', '', 'JSON Files (*.json);;All Files (*)')
+        if file_name:
+            self.logger.info(f'Selected settings file: {file_name}')
+            self.settings_filepath_input.setText(file_name)
+            self.load_settings(file_name)
+        pass
+    
+    def toggle_save_settings(self):
+        file_name, _ = QFileDialog.getSaveFileName(self, 'Save File', '', 'JSON Files (*.json)')
+        if file_name:
+            self.logger.info(f'Save settings to: {file_name}')
+            # You can write to the file here
+            self.save_settings(file_name)
+        pass
     
     def toggle_ui_elements(self, enabled):
         self.api_key_input.setEnabled(enabled)
