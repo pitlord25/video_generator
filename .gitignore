@@ -4,3 +4,4 @@ dist
 logs
 settings
 main.spec
+__pycache__
