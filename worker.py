@@ -216,7 +216,7 @@ class GenerationWorker(QThread):
             self.operation_update.emit("Generating Thumbnail")
 
             self.thumbnail_prompt = self.thumbnail_prompt.replace(
-                "$summary", intro_script)
+                "$intro", intro_script)
 
             img_data = openai_helper.generate_image(
                 prompt=self.thumbnail_prompt,
