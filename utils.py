@@ -165,6 +165,7 @@ def get_default_settings() -> Dict[str, Any]:
         "api_key": "",
         "video_title": "",
         "thumbnail_prompt": "",
+        "images_prompt": "",
         "intro_prompt": "",
         "looping_prompt": "",
         "outro_prompt": "",

@@ -1,5 +1,7 @@
-import sys, log, json
-import os
+import sys, log, json, os
+current_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
+os.chdir(current_directory)
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                             QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, 
                             QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy, QMessageBox)
@@ -17,7 +19,9 @@ class VideoGeneratorApp(QMainWindow):
         
     def init_ui(self):
         self.setWindowTitle('Video Generator')
-        self.setGeometry(100, 100, 1000, 700)
+        self.setGeometry(100, 100, 1000, 800)
+        self.setMaximumSize(1920, 1080)
+        self.setMinimumSize(800, 600)
         
         # Create central widget
         central_widget = QWidget()
@@ -58,40 +62,52 @@ class VideoGeneratorApp(QMainWindow):
         
         # Prompts Group
         prompts_group = QGroupBox("Prompts")
-        prompts_layout = QVBoxLayout()
+        prompts_layout = QHBoxLayout()
+        image_prompts_layout = QVBoxLayout()
+        script_prompts_layout = QVBoxLayout()
         
         # Thumbnail Prompt
         thumbnail_prompt_label = QLabel("Thumbnail Prompt:")
         self.thumbnail_prompt_input = QTextEdit()
-        self.thumbnail_prompt_input.setPlaceholderText("Enter first prompt for generating images")
+        self.thumbnail_prompt_input.setPlaceholderText("Enter prompt for generating youtube thumbnail")
         self.thumbnail_prompt_input.setMinimumHeight(100)
-        prompts_layout.addWidget(thumbnail_prompt_label)
-        prompts_layout.addWidget(self.thumbnail_prompt_input)
+        image_prompts_layout.addWidget(thumbnail_prompt_label)
+        image_prompts_layout.addWidget(self.thumbnail_prompt_input)
+        
+        # Images Prompt
+        images_prompt_label = QLabel("Images Prompt:")
+        self.images_prompt_input = QTextEdit()
+        self.images_prompt_input.setPlaceholderText("Enter prompt for generating images")
+        self.images_prompt_input.setMinimumHeight(100)
+        image_prompts_layout.addWidget(images_prompt_label)
+        image_prompts_layout.addWidget(self.images_prompt_input)
         
         # Intro Prompt
         intro_prompt = QLabel("Intro Prompt:")
         self.intro_prompt_input = QTextEdit()
         self.intro_prompt_input.setPlaceholderText("Enter first prompt for generating script")
         self.intro_prompt_input.setMinimumHeight(100)
-        prompts_layout.addWidget(intro_prompt)
-        prompts_layout.addWidget(self.intro_prompt_input)
+        script_prompts_layout.addWidget(intro_prompt)
+        script_prompts_layout.addWidget(self.intro_prompt_input)
         
-        # Prompt 2
+        # Looping Prompt
         looping_prompt_label = QLabel("Looping Prompt:")
         self.looping_prompt_input = QTextEdit()
         self.looping_prompt_input.setPlaceholderText("Enter second prompt for generating script")
         self.looping_prompt_input.setMinimumHeight(100)
-        prompts_layout.addWidget(looping_prompt_label)
-        prompts_layout.addWidget(self.looping_prompt_input)
+        script_prompts_layout.addWidget(looping_prompt_label)
+        script_prompts_layout.addWidget(self.looping_prompt_input)
         
-        # Prompt 3
+        # Outro Prompt
         outro_prompt_label = QLabel("Outro Prompt:")
         self.outro_prompt_input = QTextEdit()
         self.outro_prompt_input.setPlaceholderText("Enter third prompt for generating script")
         self.outro_prompt_input.setMinimumHeight(100)
-        prompts_layout.addWidget(outro_prompt_label)
-        prompts_layout.addWidget(self.outro_prompt_input)
+        script_prompts_layout.addWidget(outro_prompt_label)
+        script_prompts_layout.addWidget(self.outro_prompt_input)
         
+        prompts_layout.addLayout(image_prompts_layout)
+        prompts_layout.addLayout(script_prompts_layout)
         prompts_group.setLayout(prompts_layout)
         left_layout.addWidget(prompts_group)
         
@@ -208,6 +224,7 @@ class VideoGeneratorApp(QMainWindow):
                 "api_key": self.api_key_input.text(),
                 "video_title": self.video_title_input.text(),
                 "thumbnail_prompt": self.thumbnail_prompt_input.toPlainText(),
+                "images_prompt": self.images_prompt_input.toPlainText(),
                 "intro_prompt": self.intro_prompt_input.toPlainText(),
                 "looping_prompt": self.looping_prompt_input.toPlainText(),
                 "outro_prompt": self.outro_prompt_input.toPlainText(),
@@ -247,6 +264,7 @@ class VideoGeneratorApp(QMainWindow):
             self.api_key_input.setText(settings.get("api_key", ""))
             self.video_title_input.setText(settings.get("video_title", ""))
             self.thumbnail_prompt_input.setPlainText(settings.get("thumbnail_prompt", ""))
+            self.images_prompt_input.setPlainText(settings.get("images_prompt", ""))
             self.intro_prompt_input.setPlainText(settings.get("intro_prompt", ""))
             self.looping_prompt_input.setPlainText(settings.get("looping_prompt", ""))
             self.outro_prompt_input.setPlainText(settings.get("outro_prompt", ""))
@@ -291,6 +309,7 @@ class VideoGeneratorApp(QMainWindow):
         # Get all input values
         video_title = self.video_title_input.text().strip()
         thumbnail_prompt = self.thumbnail_prompt_input.toPlainText().strip()
+        images_prompt = self.images_prompt_input.toPlainText().strip()
         intro_prompt = self.intro_prompt_input.toPlainText().strip()
         looping_prompt = self.looping_prompt_input.toPlainText().strip()
         outro_prompt = self.outro_prompt_input.toPlainText().strip()
@@ -314,7 +333,8 @@ class VideoGeneratorApp(QMainWindow):
         # Create a worker thread to handle the generation process
         self.worker = GenerationWorker(
             api_key, video_title,
-            thumbnail_prompt, intro_prompt, looping_prompt, outro_prompt,
+            thumbnail_prompt, images_prompt,
+            intro_prompt, looping_prompt, outro_prompt,
             loop_length, word_limit,
             image_count, image_word_limit,
             self.logger
@@ -348,6 +368,7 @@ class VideoGeneratorApp(QMainWindow):
         self.toggle_key_visibility_btn.setEnabled(enabled)
         self.video_title_input.setEnabled(enabled)
         self.thumbnail_prompt_input.setEnabled(enabled)
+        self.images_prompt_input.setEnabled(enabled)
         self.intro_prompt_input.setEnabled(enabled)
         self.looping_prompt_input.setEnabled(enabled)
         self.outro_prompt_input.setEnabled(enabled)
