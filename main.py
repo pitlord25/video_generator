@@ -809,7 +809,7 @@ class VideoGeneratorApp(QMainWindow):
         else:
             success_msg = f"Video uploaded and published publicly!\nURL: {url}\nVideo ID: {video_id}\n\nYour video is now live and can be viewed by anyone!"
             
-        self.logger.info(self, success_msg)
+        self.logger.info(success_msg)
     
     def upload_youtube_error(self, error_msg):
         self.toggle_ui_elements(True)
