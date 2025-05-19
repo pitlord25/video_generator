@@ -90,15 +90,25 @@ class UploadThread(QThread):
             if self.thumbnail_path and os.path.exists(self.thumbnail_path):
                 self.status_signal.emit("Uploading thumbnail...")
                 try:
-                    youtube.thumbnails().set(
-                        videoId=video_id,
-                        media_body=MediaFileUpload(self.thumbnail_path)
-                    ).execute()
-                    self.status_signal.emit("Thumbnail uploaded successfully!")
+                    # Check if file size is within YouTube's limits (2MB)
+                    file_size = os.path.getsize(self.thumbnail_path)
+                    if file_size > 2 * 1024 * 1024:  # 2MB in bytes
+                        self.status_signal.emit("Thumbnail too large (max 2MB), skipping...")
+                    else:
+                        youtube.thumbnails().set(
+                            videoId=video_id,
+                            media_body=MediaFileUpload(self.thumbnail_path)
+                        ).execute()
+                        self.status_signal.emit("Thumbnail uploaded successfully!")
                 except Exception as e:
-                    self.status_signal.emit(f"Thumbnail upload failed: {str(e)}")
+                    # Don't fail the entire upload for thumbnail issues
+                    error_msg = str(e)
+                    if "insufficient permission" in error_msg.lower():
+                        self.status_signal.emit("Thumbnail upload requires additional permissions - video uploaded successfully without custom thumbnail")
+                    else:
+                        self.status_signal.emit(f"Thumbnail upload failed: {error_msg}")
             
-            # If set to public immediately (not scheduled), verify it's actually public
+            # If set to public immediately (not scheduled), try to verify it's actually public
             if self.privacy_status == 'public' and not self.publish_at:
                 self.status_signal.emit("Verifying video is public...")
                 try:
@@ -108,13 +118,21 @@ class UploadThread(QThread):
                         id=video_id
                     ).execute()
                     
-                    actual_status = video_response['items'][0]['status']['privacyStatus']
-                    if actual_status == 'public':
-                        self.status_signal.emit("Video is now public and accessible!")
+                    if video_response['items']:
+                        actual_status = video_response['items'][0]['status']['privacyStatus']
+                        if actual_status == 'public':
+                            self.status_signal.emit("Video is now public and accessible!")
+                        else:
+                            self.status_signal.emit(f"Video uploaded but status is: {actual_status}")
                     else:
-                        self.status_signal.emit(f"Video uploaded but status is: {actual_status}")
+                        self.status_signal.emit("Video uploaded successfully!")
                 except Exception as e:
-                    self.status_signal.emit(f"Could not verify video status: {str(e)}")
+                    # Don't fail for status check issues
+                    error_msg = str(e)
+                    if "insufficient permission" in error_msg.lower():
+                        self.status_signal.emit("Video uploaded successfully! (Cannot verify status due to permissions)")
+                    else:
+                        self.status_signal.emit("Video uploaded successfully! (Status verification unavailable)")
             
             self.finished_signal.emit(video_url, video_id)
             
@@ -343,8 +361,7 @@ class YouTubeUploader(QMainWindow):
                 # Updated scopes for full YouTube access
                 scopes = [
                     'https://www.googleapis.com/auth/youtube.upload',
-                    'https://www.googleapis.com/auth/youtube',
-                    'https://www.googleapis.com/auth/youtube.force-ssl'
+                    'https://www.googleapis.com/auth/youtube.readonly'
                 ]
                 
                 flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
