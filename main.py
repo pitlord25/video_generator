@@ -789,7 +789,7 @@ class VideoGeneratorApp(QMainWindow):
         print(self.video_title)
         
     def update_youtube_upload_progress(self, progress):
-        self.progress_bar.setValue(progress)
+        self.youtube_upload_progress_bar.setValue(progress)
     
     def update_upload_youtube_status(self, status):
         self.youtube_status_label.setText(f"Status: {status}")
@@ -797,7 +797,7 @@ class VideoGeneratorApp(QMainWindow):
     def upload_youtube_upload_finished(self, url, video_id):
         self.toggle_ui_elements(True)
         # Update status
-        self.progress_bar.setValue(100)
+        self.youtube_upload_progress_bar.setValue(100)
         
         # Show URL
         self.result_url.setText(url)
@@ -808,17 +808,17 @@ class VideoGeneratorApp(QMainWindow):
         else:
             success_msg = f"Video uploaded and published publicly!\nURL: {url}\nVideo ID: {video_id}\n\nYour video is now live and can be viewed by anyone!"
             
-        self.logger.info(self, "Success", success_msg)
+        self.logger.info(self, success_msg)
     
     def upload_youtube_error(self, error_msg):
         self.toggle_ui_elements(True)
         # Re-enable UI elements
         
         # Update status
-        self.youtube_status_label.setText(f"Status: Error: {error_msg}")
+        self.youtube_status_label.setText(f"Status: Error: {str(error_msg)}")
         
         # Show error message
-        self.logger.error(self, "Upload Error", f"Failed to upload video: {error_msg}")
+        self.logger.error(self, "Upload Error", f"Failed to upload video: {str(error_msg)}")
 
     def toggle_load_settings(self):
         file_name, _ = QFileDialog.getOpenFileName(
