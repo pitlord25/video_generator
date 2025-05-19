@@ -36,6 +36,8 @@ class OpenAIHelper:
             top_p=top_p,
             previous_response_id=prev_id
         )
+        if response.error is not None:
+            return (None, response.error)
         return (response.output_text, response.id)
 
     def generate_image(
@@ -113,7 +115,6 @@ def create_output_directory(base_dir: str = "output") -> str:
         os.makedirs(base_dir, exist_ok=True)
         return base_dir
 
-
 def save_config(config: Dict[str, Any], directory: str) -> bool:
     """
     Save configuration to a JSON file
@@ -137,7 +138,6 @@ def save_config(config: Dict[str, Any], directory: str) -> bool:
         logging.error(f"Failed to save configuration: {str(e)}")
         return False
 
-
 def load_config(filepath: str) -> Optional[Dict[str, Any]]:
     """
     Load configuration from a JSON file
@@ -154,7 +154,6 @@ def load_config(filepath: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logging.error(f"Failed to load configuration: {str(e)}")
         return None
-
 
 def get_default_settings() -> Dict[str, Any]:
     """
@@ -176,7 +175,6 @@ def get_default_settings() -> Dict[str, Any]:
         "image_word_limit": 15
     }
 
-
 def get_settings_filepath() -> str:
     """
     Get the filepath for the settings file
@@ -186,7 +184,6 @@ def get_settings_filepath() -> str:
     # Create settings directory if it doesn't exist
     os.makedirs("settings", exist_ok=True)
     return os.path.join("settings", "video_generator_settings.json")
-
 
 def sanitize_for_script(text) -> str:
     return (text

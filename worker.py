@@ -2,11 +2,7 @@ from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 from utils import OpenAIHelper, create_output_directory, sanitize_for_script, save_image_base64, split_text_into_chunks, save_audio_as_file
 from threading import Thread
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-import os
-import shutil
-import subprocess
-import random
-import math
+import os, shutil, subprocess, random, math, traceback
 
 
 def call_with_future(fn, future, args, kwargs):
@@ -62,21 +58,16 @@ class GenerationWorker(QThread):
                 audio_data=audio_data,
                 output_file=os.path.join(output_dir, f"audio{idx + 1}.mp3")
             )
-            # Update progress for this specific audio generation
-            return
         except Exception as e:
             self.logger.error(f"Error generating audio: {str(e)}")
             return None
-
-    def safe_emit_progress(self, value):
-        QTimer.singleShot(0, lambda: self.progress_update.emit(value))
 
     def update_audio_progress(self):
         """Update the progress specifically for audio generation"""
         self.completed_audio_chunks += 1
         progress = 45 + (self.completed_audio_chunks /
                          self.total_audio_chunks * 20)
-        self.safe_emit_progress(int(progress))
+        self.progress_update.emit(int(progress))
         self.logger.info(
             f"Generated audio {self.completed_audio_chunks}/{self.total_audio_chunks}!")
 
@@ -85,7 +76,7 @@ class GenerationWorker(QThread):
         self.completed_image_chunks += 1
         progress = 25 + (self.completed_image_chunks /
                          self.total_image_chunks * 20)
-        self.safe_emit_progress(int(progress))
+        self.progress_update.emit(int(progress))
         self.logger.info(
             f"Generated image {self.completed_image_chunks}/{self.total_image_chunks}!")
 
@@ -181,26 +172,43 @@ class GenerationWorker(QThread):
             self.logger.info(f"Generating intro scripts....")
             (intro_script, prev_id) = openai_helper.generate_text(
                 prompt=self.intro_prompt)
+            
+            if intro_script is None:
+                self.logger.info("Failed to generate the intro scripts! Stopped the video generation")
+                self.logger.error(prev_id)
+                raise Exception(prev_id)
+                
             self.logger.info(f"Intro script is generated successfully!")
             self.progress_update.emit(6)
-            i = 0
-
-            while i < self.loop_length:
+            
+            for idx in range(1, self.loop_length + 1):
                 self.logger.info(
-                    f"Generating looping scripts({i+1}/{self.loop_length})....")
+                    f"Generating looping scripts({idx}/{self.loop_length})....")
                 (script, prev_id) = openai_helper.generate_text(
                     prompt=self.looping_prompt, prev_id=prev_id)
                 looping_script += script + '\n\n'
-                i = i + 1
-                self.progress_update.emit(6 + i / self.loop_length * 3)
                 self.logger.info(
-                    f"Looping script({i}/{self.loop_length}) is generated successfully!")
+                    f"Looping script({idx}/{self.loop_length}) is generated successfully!")
+                
+                if intro_script is None:
+                    self.logger.info(f"Failed to generate the {idx}/{self.loop_length} looping script! Stopped the video generation")
+                    self.logger.error(prev_id)
+                    return
+                
+                self.progress_update.emit(int(6 + idx / self.loop_length * 3))
 
             self.logger.info(f"Generating outro scripts....")
             (outro_script, prev_id) = openai_helper.generate_text(
-                prompt=self.outro_prompt)
-            self.progress_update.emit(10)
+                prompt=self.outro_prompt,
+                prev_id=prev_id)
+            
+            if intro_script is None:
+                self.logger.info("Failed to generate the outro scripts! Stopped the video generation")
+                self.logger.error(prev_id)
+                return
+            
             self.logger.info(f"Outro script is generated successfully!")
+            self.progress_update.emit(10)
 
             total_script = intro_script + '\n\n' + looping_script + '\n\n' + outro_script
 
@@ -208,9 +216,10 @@ class GenerationWorker(QThread):
             sanitize_for_script(intro_script)
 
             # Save script as a file
-            with open(os.path.join(output_dir, 'script.txt'), 'w') as file:
+            with open(os.path.join(output_dir, 'script.txt'), 'w', encoding='utf-8') as file:
                 file.write(total_script)
 
+            return
             # 3. Generate the thumbnail Image
             self.logger.info(f"Step 3/6: Generating Thumbnail")
             self.operation_update.emit("Generating Thumbnail")
@@ -417,8 +426,9 @@ class GenerationWorker(QThread):
             self.operation_update.emit("Completed")
 
         except Exception as e:
-            self.logger.error(f"Error during generation: {str(e)}")
+            self.logger.error(f"Error during generation: {e}")
             self.operation_update.emit(f"Error: {str(e)}")
+            traceback.print_exc()
 
         finally:
             self.finished.emit()

@@ -5,3 +5,5 @@ logs
 settings
 main.spec
 __pycache__
+output
+token.pickle

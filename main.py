@@ -1,15 +1,21 @@
+import os, sys
+current_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
+os.chdir(current_directory)
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QFileDialog,
                              QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy, QMessageBox)
-import json
-import log
 from worker import GenerationWorker
 from utils import get_default_settings, get_settings_filepath
 from PyQt5.QtCore import Qt
-import sys
-import os
-current_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
-os.chdir(current_directory)
+import log, json, pickle
+from google.auth.transport.requests import Request
+import google_auth_oauthlib.flow
+
+# If modifying these scopes, delete your previously saved credentials
+SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
+API_SERVICE_NAME = 'youtube'
+API_VERSION = 'v3'
 
 
 class VideoGeneratorApp(QMainWindow):
@@ -39,14 +45,14 @@ class VideoGeneratorApp(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
 
-        # Settings Group
-        settings_file_group = QGroupBox('Settings File Path')
+        # Presets Group
+        settings_file_group = QGroupBox('Presets File Path')
         settings_file_layout = QVBoxLayout()
         self.settings_filepath_input = QLineEdit()
         self.settings_filepath_input.setReadOnly(True)
         settings_file_button_layout = QHBoxLayout()
-        self.settings_save_button = QPushButton("Save Settings")
-        self.settings_load_button = QPushButton("Load Settings")
+        self.settings_save_button = QPushButton("Save Presets")
+        self.settings_load_button = QPushButton("Load Presets")
         self.settings_save_button.clicked.connect(self.toggle_save_settings)
         self.settings_load_button.clicked.connect(self.toggle_load_settings)
 
@@ -178,6 +184,35 @@ class VideoGeneratorApp(QMainWindow):
 
         settings_group.setLayout(settings_layout)
         left_layout.addWidget(settings_group)
+        
+        # Youtube related settings
+        self.youtube_group = QGroupBox("YouTube")
+        youtube_layout = QVBoxLayout()
+        credential_detail_layout = QGridLayout()
+        
+        client_id_label = QLabel("Client ID")
+        self.google_client_id_edit = QLineEdit()
+        self.google_client_id_edit.setReadOnly(True)
+        credential_detail_layout.addWidget(client_id_label, 0, 0)
+        credential_detail_layout.addWidget(self.google_client_id_edit, 0, 1)
+        
+        project_id_label = QLabel("Project ID")
+        self.google_project_id_edit = QLineEdit()
+        self.google_project_id_edit.setReadOnly(True)
+        credential_detail_layout.addWidget(project_id_label, 1, 0)
+        credential_detail_layout.addWidget(self.google_project_id_edit, 1, 1)
+        
+        credential_control_layout = QHBoxLayout()
+        space = QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.load_youtube_credential_button = QPushButton("Load Credential")
+        self.load_youtube_credential_button.clicked.connect(self.load_youtube_credential)
+        credential_control_layout.addItem(space)
+        credential_control_layout.addWidget(self.load_youtube_credential_button)
+        
+        youtube_layout.addLayout(credential_detail_layout)
+        youtube_layout.addLayout(credential_control_layout)
+        self.youtube_group.setLayout(youtube_layout)
+        left_layout.addWidget(self.youtube_group)
 
         # Generate button
         self.generate_btn = QPushButton("Generate Video")
@@ -234,6 +269,9 @@ class VideoGeneratorApp(QMainWindow):
         # Set up log handler to display logs in the log window
         log_handler = log.LogHandler(self.update_log)
         self.logger.addHandler(log_handler)
+        
+        # Set up youtube credential
+        self.google_token_path = os.path.join(current_directory, 'token.pickle')
 
         self.logger.info("Application initialized and ready")
 
@@ -353,6 +391,11 @@ class VideoGeneratorApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"All prompts are required")
             return
 
+        if not hasattr(self, 'credentials') or not self.credentials:
+            self.logger.error("Need to load google client secret json file to upload video to youtube!")
+            QMessageBox.critical(self, "Error", f"Need to load google client secret json file to upload video to youtube!")
+            return
+        
         video_title = video_title.replace(' ', '-')
         thumbnail_prompt = thumbnail_prompt.replace('$title', video_title)
         intro_prompt = intro_prompt.replace('$title', video_title)
@@ -414,7 +457,67 @@ class VideoGeneratorApp(QMainWindow):
             # You can write to the file here
             self.save_settings(file_name)
         pass
+    
+    def get_credentials(self):
+        if not self.client_secrets_file:
+            QMessageBox.warning(self, 'Warning', 'Please load OAuth2 client secrets file first')
+            return
+            
+        try:
+            flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
+                self.client_secrets_file, SCOPES)
+            self.credentials = flow.run_local_server(port=8080)
+            
+            # Save the credentials for the next run
+            with open(self.google_token_path, 'wb') as token:
+                pickle.dump(self.credentials, token)
+                
+            self.logger.info('Authentication successful')
+            self.load_credential_info()
+        except Exception as e:
+            QMessageBox.critical(self, 'Error', f'Authentication failed: {str(e)}')
+    
+    def load_youtube_credential(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 'Load Google OAuth2 Client Secrets', '', 'JSON Files (*.json);;All Files (*)')
+        
+        if file_path :
+            self.client_secrets_file = file_path
+            # Check if there are saved credentials
+            
+            if os.path.exists(self.google_token_path):
+                with open(self.google_token_path, 'rb') as token:
+                    self.credentials = pickle.load(token)
+                
+                # Check if credentials are valid or need refreshing
+                if self.credentials and self.credentials.expired and self.credentials.refresh_token:
+                    self.credentials.refresh(Request())
+                    with open(self.google_token_path, 'wb') as token:
+                        pickle.dump(self.credentials, token)
+                    
+                    self.logger.info('Credentials loaded and refreshed')
+                    self.load_credential_info()
+                else:
+                    self.logger.info('Credentials loaded successfully')
+                    self.load_credential_info()
+                
+                return
+            
+            # If no saved credentials, get new ones
+            self.get_credentials()
 
+    def load_credential_info(self) :
+        client_id = self.credentials.client_id
+        prefix = client_id[:10]
+        suffix = "apps.googleusercontent.com"
+
+        # Calculate how many characters to mask in the middle
+        middle_length = len(client_id) - len(prefix) - len(suffix)
+        masked_middle = '*' * max(middle_length, 0)
+
+        masked_client_id = prefix + masked_middle + suffix
+        self.google_client_id_edit.setText(masked_client_id)
+        
     def toggle_ui_elements(self, enabled):
         self.api_key_input.setEnabled(enabled)
         self.toggle_key_visibility_btn.setEnabled(enabled)
@@ -429,6 +532,7 @@ class VideoGeneratorApp(QMainWindow):
         self.image_chunk_count_spinbox.setEnabled(enabled)
         self.image_chunk_word_limit_spinbox.setEnabled(enabled)
         self.generate_btn.setEnabled(enabled)
+        self.load_youtube_credential_button.setEnabled(enabled)
 
 
 if __name__ == "__main__":
