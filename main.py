@@ -506,7 +506,7 @@ class VideoGeneratorApp(QMainWindow):
         self.schedule_checkbox.stateChanged.connect(self.toggle_schedule)
 
         self.schedule_datetime = QDateTimeEdit()
-        self.schedule_datetime.setMinimumDateTime(QDateTime.currentDateTime().addSecs(3600))
+        self.schedule_datetime.setMinimumDateTime(QDateTime.currentDateTime().addSecs(300))
         self.schedule_datetime.setEnabled(False)
         self.schedule_datetime.setStyleSheet("padding: 8px;")
 
