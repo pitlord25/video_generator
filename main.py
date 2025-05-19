@@ -1,19 +1,31 @@
-import os, sys
+import os
+import sys
 current_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
 os.chdir(current_directory)
 
+import pickle
+import json
+import log
+import google_auth_oauthlib.flow
+from google.auth.transport.requests import Request
+from utils import get_default_settings, get_settings_filepath
+from worker import GenerationWorker
+from PyQt5.QtGui import QIcon, QFont, QPalette, QColor
+from PyQt5.QtCore import Qt, QSize, QDateTime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QFileDialog,
-                             QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy, QMessageBox)
-from worker import GenerationWorker
-from utils import get_default_settings, get_settings_filepath
-from PyQt5.QtCore import Qt
-import log, json, pickle
-from google.auth.transport.requests import Request
-import google_auth_oauthlib.flow
+                             QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy,
+                             QMessageBox, QTabWidget, QFrame, QScrollArea, QStyle, QStyleFactory,
+                             QCheckBox, QDateTimeEdit)
+
+from uploader import UploadThread
+
 
 # If modifying these scopes, delete your previously saved credentials
-SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
+SCOPES = [
+    'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/youtube.readonly'
+]
 API_SERVICE_NAME = 'youtube'
 API_VERSION = 'v3'
 
@@ -22,13 +34,18 @@ class VideoGeneratorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.logger = log.setup_logger()
+        self.setup_style()
         self.init_ui()
 
+    def setup_style(self):
+        """Setup application style and color scheme"""
+        self.setStyle(QStyleFactory.create("Fusion"))
+
     def init_ui(self):
-        self.setWindowTitle('Video Generator')
-        self.setGeometry(100, 100, 1000, 800)
+        self.setWindowTitle('AI Video Generator')
+        self.setGeometry(100, 100, 1200, 800)
         self.setMaximumSize(1920, 1080)
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(900, 700)
 
         # Create central widget
         central_widget = QWidget()
@@ -41,187 +58,52 @@ class VideoGeneratorApp(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter)
 
-        # Left panel containing settings
+        # Left panel with tabs for better organization
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Presets Group
-        settings_file_group = QGroupBox('Presets File Path')
-        settings_file_layout = QVBoxLayout()
-        self.settings_filepath_input = QLineEdit()
-        self.settings_filepath_input.setReadOnly(True)
-        settings_file_button_layout = QHBoxLayout()
-        self.settings_save_button = QPushButton("Save Presets")
-        self.settings_load_button = QPushButton("Load Presets")
-        self.settings_save_button.clicked.connect(self.toggle_save_settings)
-        self.settings_load_button.clicked.connect(self.toggle_load_settings)
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabPosition(QTabWidget.North)
+        self.tab_widget.setDocumentMode(True)
 
-        spaceItem = QSpacerItem(
-            20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        settings_file_button_layout.addItem(spaceItem)
-        settings_file_button_layout.addWidget(self.settings_save_button)
-        settings_file_button_layout.addWidget(self.settings_load_button)
-        settings_file_layout.addWidget(self.settings_filepath_input)
-        settings_file_layout.addLayout(settings_file_button_layout)
-        settings_file_group.setLayout(settings_file_layout)
-        left_layout.addWidget(settings_file_group)
-        # self.
+        # Create tabs
+        self.setup_general_tab()
+        self.setup_prompts_tab()
+        self.setup_settings_tab()
+        self.setup_youtube_tab()
 
-        # API Key Group
-        api_key_group = QGroupBox("OpenAI API Key")
-        api_key_layout = QHBoxLayout()
-        self.api_key_input = QLineEdit()
-        self.api_key_input.setEchoMode(QLineEdit.Password)
-        self.api_key_input.setPlaceholderText("Enter your OpenAI API key")
-        self.toggle_key_visibility_btn = QPushButton("Show")
-        self.toggle_key_visibility_btn.setFixedWidth(80)
-        self.toggle_key_visibility_btn.clicked.connect(
-            self.toggle_key_visibility)
-        api_key_layout.addWidget(self.api_key_input)
-        api_key_layout.addWidget(self.toggle_key_visibility_btn)
-        api_key_group.setLayout(api_key_layout)
-        left_layout.addWidget(api_key_group)
-
-        # Video Title
-        video_title_layout = QGridLayout()
-        video_title_label = QLabel("Video Title:")
-        self.video_title_input = QLineEdit()
-        video_title_layout.addWidget(video_title_label, 0, 0)
-        video_title_layout.addWidget(self.video_title_input, 0, 1)
-        left_layout.addLayout(video_title_layout)
-
-        # Prompts Group
-        prompts_group = QGroupBox("Prompts")
-        prompts_layout = QHBoxLayout()
-        image_prompts_layout = QVBoxLayout()
-        script_prompts_layout = QVBoxLayout()
-
-        # Thumbnail Prompt
-        thumbnail_prompt_label = QLabel("Thumbnail Prompt:")
-        self.thumbnail_prompt_input = QTextEdit()
-        self.thumbnail_prompt_input.setPlaceholderText(
-            "Enter prompt for generating youtube thumbnail")
-        self.thumbnail_prompt_input.setMinimumHeight(100)
-        image_prompts_layout.addWidget(thumbnail_prompt_label)
-        image_prompts_layout.addWidget(self.thumbnail_prompt_input)
-
-        # Images Prompt
-        images_prompt_label = QLabel("Images Prompt:")
-        self.images_prompt_input = QTextEdit()
-        self.images_prompt_input.setPlaceholderText(
-            "Enter prompt for generating images")
-        self.images_prompt_input.setMinimumHeight(100)
-        image_prompts_layout.addWidget(images_prompt_label)
-        image_prompts_layout.addWidget(self.images_prompt_input)
-
-        # Intro Prompt
-        intro_prompt = QLabel("Intro Prompt:")
-        self.intro_prompt_input = QTextEdit()
-        self.intro_prompt_input.setPlaceholderText(
-            "Enter first prompt for generating script")
-        self.intro_prompt_input.setMinimumHeight(100)
-        script_prompts_layout.addWidget(intro_prompt)
-        script_prompts_layout.addWidget(self.intro_prompt_input)
-
-        # Looping Prompt
-        looping_prompt_label = QLabel("Looping Prompt:")
-        self.looping_prompt_input = QTextEdit()
-        self.looping_prompt_input.setPlaceholderText(
-            "Enter second prompt for generating script")
-        self.looping_prompt_input.setMinimumHeight(100)
-        script_prompts_layout.addWidget(looping_prompt_label)
-        script_prompts_layout.addWidget(self.looping_prompt_input)
-
-        # Outro Prompt
-        outro_prompt_label = QLabel("Outro Prompt:")
-        self.outro_prompt_input = QTextEdit()
-        self.outro_prompt_input.setPlaceholderText(
-            "Enter third prompt for generating script")
-        self.outro_prompt_input.setMinimumHeight(100)
-        script_prompts_layout.addWidget(outro_prompt_label)
-        script_prompts_layout.addWidget(self.outro_prompt_input)
-
-        prompts_layout.addLayout(image_prompts_layout)
-        prompts_layout.addLayout(script_prompts_layout)
-        prompts_group.setLayout(prompts_layout)
-        left_layout.addWidget(prompts_group)
-
-        # Settings Group
-        settings_group = QGroupBox("Settings")
-        settings_layout = QGridLayout()
-
-        # Prompt looping length
-        prompt_loop_label = QLabel("Prompt Looping Length:")
-        self.prompt_loop_spinbox = QSpinBox()
-        self.prompt_loop_spinbox.setRange(1, 100)
-        self.prompt_loop_spinbox.setValue(3)
-        settings_layout.addWidget(prompt_loop_label, 0, 0)
-        settings_layout.addWidget(self.prompt_loop_spinbox, 0, 1)
-
-        # Word limit per audio chunk
-        audio_word_limit_label = QLabel("Word Limit per Audio Chunk:")
-        self.audio_word_limit_spinbox = QSpinBox()
-        self.audio_word_limit_spinbox.setRange(10, 800)
-        self.audio_word_limit_spinbox.setValue(400)
-        settings_layout.addWidget(audio_word_limit_label, 1, 0)
-        settings_layout.addWidget(self.audio_word_limit_spinbox, 1, 1)
-
-        # Thumbnail chunks settings
-        image_chunk_count_label = QLabel("Image Chunks Count:")
-        self.image_chunk_count_spinbox = QSpinBox()
-        self.image_chunk_count_spinbox.setRange(1, 20)
-        self.image_chunk_count_spinbox.setValue(3)
-        settings_layout.addWidget(image_chunk_count_label, 2, 0)
-        settings_layout.addWidget(self.image_chunk_count_spinbox, 2, 1)
-
-        image_chunk_word_limit_label = QLabel(
-            "Word Limit For Image Prompt Chunk:")
-        self.image_chunk_word_limit_spinbox = QSpinBox()
-        self.image_chunk_word_limit_spinbox.setRange(5, 100)
-        self.image_chunk_word_limit_spinbox.setValue(15)
-        settings_layout.addWidget(image_chunk_word_limit_label, 3, 0)
-        settings_layout.addWidget(self.image_chunk_word_limit_spinbox, 3, 1)
-
-        settings_group.setLayout(settings_layout)
-        left_layout.addWidget(settings_group)
-        
-        # Youtube related settings
-        self.youtube_group = QGroupBox("YouTube")
-        youtube_layout = QVBoxLayout()
-        credential_detail_layout = QGridLayout()
-        
-        client_id_label = QLabel("Client ID")
-        self.google_client_id_edit = QLineEdit()
-        self.google_client_id_edit.setReadOnly(True)
-        credential_detail_layout.addWidget(client_id_label, 0, 0)
-        credential_detail_layout.addWidget(self.google_client_id_edit, 0, 1)
-        
-        project_id_label = QLabel("Project ID")
-        self.google_project_id_edit = QLineEdit()
-        self.google_project_id_edit.setReadOnly(True)
-        credential_detail_layout.addWidget(project_id_label, 1, 0)
-        credential_detail_layout.addWidget(self.google_project_id_edit, 1, 1)
-        
-        credential_control_layout = QHBoxLayout()
-        space = QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.load_youtube_credential_button = QPushButton("Load Credential")
-        self.load_youtube_credential_button.clicked.connect(self.load_youtube_credential)
-        credential_control_layout.addItem(space)
-        credential_control_layout.addWidget(self.load_youtube_credential_button)
-        
-        youtube_layout.addLayout(credential_detail_layout)
-        youtube_layout.addLayout(credential_control_layout)
-        self.youtube_group.setLayout(youtube_layout)
-        left_layout.addWidget(self.youtube_group)
+        left_layout.addWidget(self.tab_widget)
 
         # Generate button
-        self.generate_btn = QPushButton("Generate Video")
-        self.generate_btn.setFixedHeight(40)
-        self.generate_btn.clicked.connect(self.start_generation)
-        left_layout.addWidget(self.generate_btn)
+        generate_button_container = QWidget()
+        generate_layout = QVBoxLayout(generate_button_container)
 
-        # Add stretch to push everything up
-        left_layout.addStretch()
+        self.generate_btn = QPushButton("GENERATE VIDEO")
+        self.generate_btn.setFont(QFont("Arial", 12, QFont.Bold))
+        self.generate_btn.setFixedHeight(50)
+        self.generate_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.generate_btn.clicked.connect(self.start_generation)
+
+        generate_layout.addWidget(self.generate_btn)
+        left_layout.addWidget(generate_button_container)
 
         # Right panel containing progress and logs
         right_panel = QWidget()
@@ -235,14 +117,61 @@ class VideoGeneratorApp(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #bbb;
+                border-radius: 4px;
+                text-align: center;
+                height: 25px;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+            }
+        """)
         progress_layout.addWidget(self.progress_bar)
 
         # Current operation label
         self.current_operation_label = QLabel("Ready")
+        self.current_operation_label.setAlignment(Qt.AlignCenter)
+        self.current_operation_label.setStyleSheet(
+            "font-weight: bold; color: #4CAF50;")
         progress_layout.addWidget(self.current_operation_label)
 
         progress_group.setLayout(progress_layout)
         right_layout.addWidget(progress_group)
+
+        # Progress section
+        youtube_upload_progress_group = QGroupBox("Upload Progress")
+        youtube_upload_progress_layout = QVBoxLayout()
+
+        self.youtube_upload_progress_bar = QProgressBar()
+        self.youtube_upload_progress_bar.setRange(0, 100)
+        self.youtube_upload_progress_bar.setValue(0)
+        self.youtube_upload_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #bbb;
+                border-radius: 4px;
+                text-align: center;
+                height: 25px;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+            }
+        """)
+        youtube_upload_progress_layout.addWidget(
+            self.youtube_upload_progress_bar)
+
+        self.youtube_status_label = QLabel("Status: Ready")
+        youtube_upload_progress_layout.addWidget(self.youtube_status_label)
+
+        self.result_url = QLineEdit()
+        self.result_url.setReadOnly(True)
+        self.result_url.setPlaceholderText(
+            "Video URL will appear here after upload")
+        youtube_upload_progress_layout.addWidget(self.result_url)
+
+        youtube_upload_progress_group.setLayout(youtube_upload_progress_layout)
+        right_layout.addWidget(youtube_upload_progress_group)
 
         # Log group
         log_group = QGroupBox("Log")
@@ -251,10 +180,33 @@ class VideoGeneratorApp(QMainWindow):
         # Log window
         self.log_window = QTextEdit()
         self.log_window.setReadOnly(True)
+        self.log_window.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #f0f0f0;
+                border: 1px solid #444;
+                border-radius: 4px;
+                font-family: Consolas, monospace;
+            }
+        """)
         log_layout.addWidget(self.log_window)
 
         # Clear log button
         self.clear_log_btn = QPushButton("Clear Log")
+        self.clear_log_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #555;
+                color: white;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #666;
+            }
+            QPushButton:pressed {
+                background-color: #444;
+            }
+        """)
         self.clear_log_btn.clicked.connect(self.clear_log)
         log_layout.addWidget(self.clear_log_btn)
 
@@ -264,16 +216,375 @@ class VideoGeneratorApp(QMainWindow):
         # Add panels to splitter
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setSizes([400, 600])  # Initial sizes
+        splitter.setSizes([400, 800])  # Initial sizes
 
         # Set up log handler to display logs in the log window
         log_handler = log.LogHandler(self.update_log)
         self.logger.addHandler(log_handler)
-        
+
         # Set up youtube credential
-        self.google_token_path = os.path.join(current_directory, 'token.pickle')
+        self.google_token_path = os.path.join(
+            current_directory, 'token.pickle')
+        self.client_secrets_file = None
+        self.credentials = None
 
         self.logger.info("Application initialized and ready")
+
+    def setup_general_tab(self):
+        """Setup general tab with API key, video title, etc."""
+        general_tab = QWidget()
+        general_layout = QVBoxLayout(general_tab)
+
+        # API Key Group
+        api_key_group = self.create_group_box("OpenAI API Key")
+        api_key_layout = QHBoxLayout()
+
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.Password)
+        self.api_key_input.setPlaceholderText("Enter your OpenAI API key")
+        self.api_key_input.setStyleSheet("padding: 8px;")
+
+        self.toggle_key_visibility_btn = QPushButton("Show")
+        self.toggle_key_visibility_btn.setFixedWidth(80)
+        self.toggle_key_visibility_btn.clicked.connect(
+            self.toggle_key_visibility)
+
+        api_key_layout.addWidget(self.api_key_input)
+        api_key_layout.addWidget(self.toggle_key_visibility_btn)
+        api_key_group.setLayout(api_key_layout)
+        general_layout.addWidget(api_key_group)
+
+        # Video Title Group
+        video_title_group = self.create_group_box("Video Details")
+        video_title_layout = QGridLayout()
+
+        video_title_label = QLabel("Video Title:")
+        self.video_title_input = QLineEdit()
+        self.video_title_input.setPlaceholderText("Enter your video title")
+        self.video_title_input.setStyleSheet("padding: 8px;")
+
+        video_title_layout.addWidget(video_title_label, 0, 0)
+        video_title_layout.addWidget(self.video_title_input, 0, 1)
+
+        video_title_group.setLayout(video_title_layout)
+        general_layout.addWidget(video_title_group)
+
+        # Presets Group
+        presets_group = self.create_group_box("Presets")
+        presets_layout = QVBoxLayout()
+
+        self.settings_filepath_input = QLineEdit()
+        self.settings_filepath_input.setReadOnly(True)
+        self.settings_filepath_input.setPlaceholderText(
+            "No preset file selected")
+        self.settings_filepath_input.setStyleSheet("padding: 8px;")
+
+        presets_buttons_layout = QHBoxLayout()
+
+        self.settings_save_button = QPushButton("Save Presets")
+        self.settings_save_button.clicked.connect(self.toggle_save_settings)
+        self.settings_save_button.setStyleSheet("padding: 8px;")
+
+        self.settings_load_button = QPushButton("Load Presets")
+        self.settings_load_button.clicked.connect(self.toggle_load_settings)
+        self.settings_load_button.setStyleSheet("padding: 8px;")
+
+        presets_buttons_layout.addItem(QSpacerItem(
+            20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        presets_buttons_layout.addWidget(self.settings_save_button)
+        presets_buttons_layout.addWidget(self.settings_load_button)
+
+        presets_layout.addWidget(self.settings_filepath_input)
+        presets_layout.addLayout(presets_buttons_layout)
+        presets_group.setLayout(presets_layout)
+        general_layout.addWidget(presets_group)
+
+        # Add stretch to push everything up
+        general_layout.addStretch()
+
+        # Add tab
+        self.tab_widget.addTab(general_tab, "General")
+
+    def setup_prompts_tab(self):
+        """Setup prompts tab with all prompt input fields"""
+        prompts_tab = QScrollArea()
+        prompts_tab.setWidgetResizable(True)
+        prompts_content = QWidget()
+        prompts_layout = QVBoxLayout(prompts_content)
+
+        # Thumbnail Prompt Group
+        thumbnail_group = self.create_group_box("Thumbnail Prompt")
+        thumbnail_layout = QVBoxLayout()
+
+        thumbnail_label = QLabel(
+            "Enter prompt for generating a youtube thumbnail:")
+        self.thumbnail_prompt_input = QTextEdit()
+        self.thumbnail_prompt_input.setPlaceholderText(
+            "For example: A vibrant, eye-catching thumbnail for a video about $title...")
+        self.thumbnail_prompt_input.setMinimumHeight(80)
+
+        thumbnail_layout.addWidget(thumbnail_label)
+        thumbnail_layout.addWidget(self.thumbnail_prompt_input)
+        thumbnail_group.setLayout(thumbnail_layout)
+        prompts_layout.addWidget(thumbnail_group)
+
+        # Images Prompt Group
+        images_group = self.create_group_box("Images Prompt")
+        images_layout = QVBoxLayout()
+
+        images_label = QLabel("Enter prompt for generating images:")
+        self.images_prompt_input = QTextEdit()
+        self.images_prompt_input.setPlaceholderText(
+            "For example: High quality images that illustrate $title...")
+        self.images_prompt_input.setMinimumHeight(80)
+
+        images_layout.addWidget(images_label)
+        images_layout.addWidget(self.images_prompt_input)
+        images_group.setLayout(images_layout)
+        prompts_layout.addWidget(images_group)
+
+        # Script Prompts Group
+        script_group = self.create_group_box("Script Prompts")
+        script_layout = QVBoxLayout()
+
+        # Intro Prompt
+        intro_label = QLabel("Intro Prompt:")
+        self.intro_prompt_input = QTextEdit()
+        self.intro_prompt_input.setPlaceholderText(
+            "Enter first prompt for generating the introduction part of the script")
+        self.intro_prompt_input.setMinimumHeight(80)
+
+        # Looping Prompt
+        looping_label = QLabel("Looping Prompt:")
+        self.looping_prompt_input = QTextEdit()
+        self.looping_prompt_input.setPlaceholderText(
+            "Enter second prompt for generating the main content of the script")
+        self.looping_prompt_input.setMinimumHeight(80)
+
+        # Outro Prompt
+        outro_label = QLabel("Outro Prompt:")
+        self.outro_prompt_input = QTextEdit()
+        self.outro_prompt_input.setPlaceholderText(
+            "Enter third prompt for generating the conclusion part of the script")
+        self.outro_prompt_input.setMinimumHeight(80)
+
+        script_layout.addWidget(intro_label)
+        script_layout.addWidget(self.intro_prompt_input)
+        script_layout.addWidget(looping_label)
+        script_layout.addWidget(self.looping_prompt_input)
+        script_layout.addWidget(outro_label)
+        script_layout.addWidget(self.outro_prompt_input)
+
+        script_group.setLayout(script_layout)
+        prompts_layout.addWidget(script_group)
+
+        # Set content widget for scroll area
+        prompts_tab.setWidget(prompts_content)
+
+        # Add tab
+        self.tab_widget.addTab(prompts_tab, "Prompts")
+
+    def setup_settings_tab(self):
+        """Setup settings tab with generation parameters"""
+        settings_tab = QWidget()
+        settings_layout = QVBoxLayout(settings_tab)
+
+        # Script Settings Group
+        script_settings = self.create_group_box("Script Generation Settings")
+        script_layout = QGridLayout()
+
+        # Prompt looping length
+        prompt_loop_label = QLabel("Prompt Looping Length:")
+        self.prompt_loop_spinbox = QSpinBox()
+        self.prompt_loop_spinbox.setRange(1, 100)
+        self.prompt_loop_spinbox.setValue(3)
+        self.prompt_loop_spinbox.setStyleSheet("padding: 5px;")
+
+        prompt_loop_help = QLabel(
+            "Number of times to repeat the looping prompt")
+        prompt_loop_help.setStyleSheet("color: #aaa; font-style: italic;")
+
+        script_layout.addWidget(prompt_loop_label, 0, 0)
+        script_layout.addWidget(self.prompt_loop_spinbox, 0, 1)
+        script_layout.addWidget(prompt_loop_help, 1, 0, 1, 2)
+
+        # Word limit per audio chunk
+        audio_word_limit_label = QLabel("Word Limit per Audio Chunk:")
+        self.audio_word_limit_spinbox = QSpinBox()
+        self.audio_word_limit_spinbox.setRange(10, 800)
+        self.audio_word_limit_spinbox.setValue(400)
+        self.audio_word_limit_spinbox.setStyleSheet("padding: 5px;")
+
+        audio_word_limit_help = QLabel(
+            "Maximum number of words in each audio chunk")
+        audio_word_limit_help.setStyleSheet("color: #aaa; font-style: italic;")
+
+        script_layout.addWidget(audio_word_limit_label, 2, 0)
+        script_layout.addWidget(self.audio_word_limit_spinbox, 2, 1)
+        script_layout.addWidget(audio_word_limit_help, 3, 0, 1, 2)
+
+        script_settings.setLayout(script_layout)
+        settings_layout.addWidget(script_settings)
+
+        # Image Settings Group
+        image_settings = self.create_group_box("Image Generation Settings")
+        image_layout = QGridLayout()
+
+        # Image chunk count
+        image_chunk_count_label = QLabel("Image Chunks Count:")
+        self.image_chunk_count_spinbox = QSpinBox()
+        self.image_chunk_count_spinbox.setRange(1, 20)
+        self.image_chunk_count_spinbox.setValue(3)
+        self.image_chunk_count_spinbox.setStyleSheet("padding: 5px;")
+
+        image_chunk_count_help = QLabel("Number of images to generate")
+        image_chunk_count_help.setStyleSheet(
+            "color: #aaa; font-style: italic;")
+
+        image_layout.addWidget(image_chunk_count_label, 0, 0)
+        image_layout.addWidget(self.image_chunk_count_spinbox, 0, 1)
+        image_layout.addWidget(image_chunk_count_help, 1, 0, 1, 2)
+
+        # Image chunk word limit
+        image_chunk_word_limit_label = QLabel(
+            "Word Limit For Image Prompt Chunk:")
+        self.image_chunk_word_limit_spinbox = QSpinBox()
+        self.image_chunk_word_limit_spinbox.setRange(5, 100)
+        self.image_chunk_word_limit_spinbox.setValue(15)
+        self.image_chunk_word_limit_spinbox.setStyleSheet("padding: 5px;")
+
+        image_chunk_word_limit_help = QLabel(
+            "Maximum number of words in each image prompt")
+        image_chunk_word_limit_help.setStyleSheet(
+            "color: #aaa; font-style: italic;")
+
+        image_layout.addWidget(image_chunk_word_limit_label, 2, 0)
+        image_layout.addWidget(self.image_chunk_word_limit_spinbox, 2, 1)
+        image_layout.addWidget(image_chunk_word_limit_help, 3, 0, 1, 2)
+
+        image_settings.setLayout(image_layout)
+        settings_layout.addWidget(image_settings)
+
+        # Add stretch to push everything up
+        settings_layout.addStretch()
+
+        # Add tab
+        self.tab_widget.addTab(settings_tab, "Settings")
+
+    def setup_youtube_tab(self):
+        """Setup YouTube tab with credentials settings"""
+        youtube_tab = QWidget()
+        youtube_layout = QVBoxLayout(youtube_tab)
+
+        # YouTube Credentials Group
+        youtube_group = self.create_group_box("YouTube API Credentials")
+
+        youtube_cred_layout = QVBoxLayout()
+
+        youtube_info = QLabel(
+            "Configure your YouTube API credentials to enable video uploads.")
+        youtube_info.setWordWrap(True)
+        youtube_info.setStyleSheet("color: #ddd; margin-bottom: 10px;")
+
+        credential_detail_layout = QGridLayout()
+
+        client_id_label = QLabel("Client ID:")
+        self.google_client_id_edit = QLineEdit()
+        self.google_client_id_edit.setReadOnly(True)
+        self.google_client_id_edit.setPlaceholderText("No credentials loaded")
+        self.google_client_id_edit.setStyleSheet("padding: 8px;")
+
+        category_id_label = QLabel("Category ID:")
+        self.category_id_edit = QLineEdit()
+        self.category_id_edit.setPlaceholderText("Input the category id")
+        self.category_id_edit.setText('24')
+        self.category_id_edit.setStyleSheet("padding: 8px;")
+
+        # Scheduling
+        # schedule_layout = QHBoxLayout()
+        self.schedule_checkbox = QCheckBox("Schedule publication")
+        self.schedule_checkbox.stateChanged.connect(self.toggle_schedule)
+
+        self.schedule_datetime = QDateTimeEdit()
+        self.schedule_datetime.setMinimumDateTime(QDateTime.currentDateTime().addSecs(3600))
+        self.schedule_datetime.setEnabled(False)
+        self.schedule_datetime.setStyleSheet("padding: 8px;")
+
+        credential_detail_layout.addWidget(client_id_label, 0, 0)
+        credential_detail_layout.addWidget(self.google_client_id_edit, 0, 1)
+        credential_detail_layout.addWidget(category_id_label, 1, 0)
+        credential_detail_layout.addWidget(self.category_id_edit, 1, 1)
+        credential_detail_layout.addWidget(self.schedule_checkbox, 2, 0)
+        credential_detail_layout.addWidget(self.schedule_datetime, 2, 1)
+
+        credential_control_layout = QHBoxLayout()
+
+        self.load_youtube_credential_button = QPushButton("Load Credentials")
+        self.load_youtube_credential_button.clicked.connect(
+            self.load_youtube_credential)
+        self.load_youtube_credential_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3d85c6;
+                color: white;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #5a9bd5;
+            }
+            QPushButton:pressed {
+                background-color: #2a5885;
+            }
+        """)
+
+        credential_control_layout.addItem(QSpacerItem(
+            20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        credential_control_layout.addWidget(
+            self.load_youtube_credential_button)
+
+        youtube_guide = QLabel(
+            "1. Go to Google Cloud Console and create a project\n"
+            "2. Enable the YouTube Data API v3\n"
+            "3. Create OAuth 2.0 credentials\n"
+            "4. Download the JSON file and load it here"
+        )
+        youtube_guide.setStyleSheet(
+            "color: #aaa; font-style: italic; margin-top: 15px;")
+        youtube_guide.setWordWrap(True)
+
+        youtube_cred_layout.addWidget(youtube_info)
+        youtube_cred_layout.addLayout(credential_detail_layout)
+        youtube_cred_layout.addLayout(credential_control_layout)
+        youtube_cred_layout.addWidget(youtube_guide)
+
+        youtube_group.setLayout(youtube_cred_layout)
+        youtube_layout.addWidget(youtube_group)
+
+        # Add stretch to push everything up
+        youtube_layout.addStretch()
+
+        # Add tab
+        self.tab_widget.addTab(youtube_tab, "YouTube")
+
+    def create_group_box(self, title):
+        """Helper method to create styled group boxes"""
+        group = QGroupBox(title)
+        group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #555;
+                border-radius: 5px;
+                margin-top: 1ex;
+                padding: 10px;
+                color: white;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top center;
+                padding: 0 5px;
+            }
+        """)
+        return group
 
     def save_settings(self, file_path):
         """Save current settings to a JSON file"""
@@ -343,7 +654,7 @@ class VideoGeneratorApp(QMainWindow):
                 settings.get("image_word_limit", 15))
 
             QMessageBox.information(
-                self, "Information", f"Succeed to load settings: {file_path}")
+                self, "Settings Loaded", f"Successfully loaded settings from {file_path}")
 
         except Exception as e:
             self.logger.error(f"Error loading settings: {str(e)}")
@@ -392,11 +703,14 @@ class VideoGeneratorApp(QMainWindow):
             return
 
         if not hasattr(self, 'credentials') or not self.credentials:
-            self.logger.error("Need to load google client secret json file to upload video to youtube!")
-            QMessageBox.critical(self, "Error", f"Need to load google client secret json file to upload video to youtube!")
+            self.logger.error(
+                "Need to load Google client secret JSON file to upload video to YouTube!")
+            QMessageBox.critical(
+                self, "Error", f"Need to load Google client secret JSON file to upload video to YouTube!")
             return
-        
+
         video_title = video_title.replace(' ', '-')
+        self.video_title = video_title
         thumbnail_prompt = thumbnail_prompt.replace('$title', video_title)
         intro_prompt = intro_prompt.replace('$title', video_title)
         looping_prompt = looping_prompt.replace('$title', video_title)
@@ -436,9 +750,75 @@ class VideoGeneratorApp(QMainWindow):
         self.current_operation_label.setText(operation)
 
     def generation_finished(self):
-        self.toggle_ui_elements(True)
         self.logger.info("Video generation completed")
         self.progress_bar.setValue(100)
+        
+        # Upload Progress Start
+        if not self.credentials or not self.credentials.valid:
+            QMessageBox.warning(self, "Warning", "Please authenticate with YouTube first.")
+            return
+        
+        video_path = os.path.join(self.video_title, "final_slideshow_with_audio.mp4")
+        thumbnail_path = os.path.join(self.video_title, "thumbnail.jpg")
+        title = self.video_title_input.text()
+        category = self.category_id_edit.text()
+        privacy_status = "Public"
+        made_for_kids = False
+        publish_at = None
+        if self.schedule_checkbox.isChecked():
+            publish_at = self.schedule_datetime.dateTime().toPyDateTime()
+            
+        self.youtube_upload_progress_bar.setValue(0)
+        self.youtube_status_label.setText("Status: Preparing upload...")
+        
+        self.upload_thread = UploadThread(
+            self.credentials, video_path, title, "", 
+            category, "", privacy_status, thumbnail_path, 
+            publish_at, made_for_kids
+        )
+        
+        # Connect signals
+        self.upload_thread.progress_signal.connect(self.update_youtube_upload_progress)
+        self.upload_thread.finished_signal.connect(self.upload_youtube_upload_finished)
+        self.upload_thread.error_signal.connect(self.upload_youtube_error)
+        self.upload_thread.status_signal.connect(self.update_upload_youtube_status)
+        
+        # Start the thread
+        self.upload_thread.start()
+        
+        print(self.video_title)
+        
+    def update_youtube_upload_progress(self, progress):
+        self.progress_bar.setValue(progress)
+    
+    def update_upload_youtube_status(self, status):
+        self.youtube_status_label.setText(f"Status: {status}")
+
+    def upload_youtube_upload_finished(self, url, video_id):
+        self.toggle_ui_elements(True)
+        # Update status
+        self.progress_bar.setValue(100)
+        
+        # Show URL
+        self.result_url.setText(url)
+        
+        # Show success message with different text based on privacy status
+        if self.schedule_checkbox.isChecked():
+            success_msg = f"Video uploaded and scheduled for publication!\nURL: {url}\nVideo ID: {video_id}"
+        else:
+            success_msg = f"Video uploaded and published publicly!\nURL: {url}\nVideo ID: {video_id}\n\nYour video is now live and can be viewed by anyone!"
+            
+        self.logger.info(self, "Success", success_msg)
+    
+    def upload_youtube_error(self, error_msg):
+        self.toggle_ui_elements(True)
+        # Re-enable UI elements
+        
+        # Update status
+        self.youtube_status_label.setText(f"Status: Error: {error_msg}")
+        
+        # Show error message
+        self.logger.error(self, "Upload Error", f"Failed to upload video: {error_msg}")
 
     def toggle_load_settings(self):
         file_name, _ = QFileDialog.getOpenFileName(
@@ -447,69 +827,71 @@ class VideoGeneratorApp(QMainWindow):
             self.logger.info(f'Selected settings file: {file_name}')
             self.settings_filepath_input.setText(file_name)
             self.load_settings(file_name)
-        pass
 
     def toggle_save_settings(self):
         file_name, _ = QFileDialog.getSaveFileName(
             self, 'Save File', '', 'JSON Files (*.json)')
         if file_name:
             self.logger.info(f'Save settings to: {file_name}')
-            # You can write to the file here
             self.save_settings(file_name)
-        pass
-    
+
     def get_credentials(self):
         if not self.client_secrets_file:
-            QMessageBox.warning(self, 'Warning', 'Please load OAuth2 client secrets file first')
+            QMessageBox.warning(
+                self, 'Warning', 'Please load OAuth2 client secrets file first')
             return
-            
+
         try:
             flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
                 self.client_secrets_file, SCOPES)
             self.credentials = flow.run_local_server(port=8080)
-            
+
             # Save the credentials for the next run
             with open(self.google_token_path, 'wb') as token:
                 pickle.dump(self.credentials, token)
-                
+
             self.logger.info('Authentication successful')
             self.load_credential_info()
         except Exception as e:
-            QMessageBox.critical(self, 'Error', f'Authentication failed: {str(e)}')
-    
+            QMessageBox.critical(
+                self, 'Error', f'Authentication failed: {str(e)}')
+
     def load_youtube_credential(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, 'Load Google OAuth2 Client Secrets', '', 'JSON Files (*.json);;All Files (*)')
-        
-        if file_path :
+
+        if file_path:
             self.client_secrets_file = file_path
             # Check if there are saved credentials
-            
+
             if os.path.exists(self.google_token_path):
                 with open(self.google_token_path, 'rb') as token:
                     self.credentials = pickle.load(token)
-                
+
                 # Check if credentials are valid or need refreshing
                 if self.credentials and self.credentials.expired and self.credentials.refresh_token:
                     self.credentials.refresh(Request())
                     with open(self.google_token_path, 'wb') as token:
                         pickle.dump(self.credentials, token)
-                    
+
                     self.logger.info('Credentials loaded and refreshed')
                     self.load_credential_info()
                 else:
                     self.logger.info('Credentials loaded successfully')
                     self.load_credential_info()
-                
+
                 return
-            
+
             # If no saved credentials, get new ones
             self.get_credentials()
 
-    def load_credential_info(self) :
+    def load_credential_info(self):
+        if not self.credentials:
+            return
+
         client_id = self.credentials.client_id
         prefix = client_id[:10]
-        suffix = "apps.googleusercontent.com"
+        suffix = client_id[-25:] if len(client_id) > 25 else ""
 
         # Calculate how many characters to mask in the middle
         middle_length = len(client_id) - len(prefix) - len(suffix)
@@ -517,8 +899,22 @@ class VideoGeneratorApp(QMainWindow):
 
         masked_client_id = prefix + masked_middle + suffix
         self.google_client_id_edit.setText(masked_client_id)
-        
+
+    def toggle_schedule(self, state):
+        self.schedule_datetime.setEnabled(state == Qt.Checked)
+        # if state == Qt.Checked:
+        #     # Force public when scheduling
+        #     self.set_privacy("public")
+        #     self.privacy_public.setEnabled(False)
+        #     self.privacy_unlisted.setEnabled(False)
+        #     self.privacy_private.setEnabled(False)
+        # else:
+        #     self.privacy_public.setEnabled(True)
+        #     self.privacy_unlisted.setEnabled(True)
+        #     self.privacy_private.setEnabled(True)
+
     def toggle_ui_elements(self, enabled):
+        # Enable/disable all input widgets
         self.api_key_input.setEnabled(enabled)
         self.toggle_key_visibility_btn.setEnabled(enabled)
         self.video_title_input.setEnabled(enabled)
@@ -531,13 +927,59 @@ class VideoGeneratorApp(QMainWindow):
         self.audio_word_limit_spinbox.setEnabled(enabled)
         self.image_chunk_count_spinbox.setEnabled(enabled)
         self.image_chunk_word_limit_spinbox.setEnabled(enabled)
+        self.settings_save_button.setEnabled(enabled)
+        self.settings_load_button.setEnabled(enabled)
         self.generate_btn.setEnabled(enabled)
         self.load_youtube_credential_button.setEnabled(enabled)
+
+        # Update button appearance
+        if not enabled:
+            self.generate_btn.setText("GENERATING...")
+            self.generate_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #cccccc;
+                    color: #666666;
+                    border-radius: 4px;
+                }
+            """)
+        else:
+            self.generate_btn.setText("GENERATE VIDEO")
+            self.generate_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #45a049;
+                }
+                QPushButton:pressed {
+                    background-color: #3d8b40;
+                }
+            """)
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # Use Fusion style for cross-platform consistency
+    # Use Fusion style for cross-platform consistency
+    app.setStyle(QStyleFactory.create('Fusion'))
+
+    # Set up application palette for a modern look
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor(53, 53, 53))
+    palette.setColor(QPalette.WindowText, Qt.white)
+    palette.setColor(QPalette.Base, QColor(25, 25, 25))
+    palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+    palette.setColor(QPalette.ToolTipBase, Qt.white)
+    palette.setColor(QPalette.ToolTipText, Qt.white)
+    palette.setColor(QPalette.Text, Qt.white)
+    palette.setColor(QPalette.Button, QColor(53, 53, 53))
+    palette.setColor(QPalette.ButtonText, Qt.white)
+    palette.setColor(QPalette.BrightText, Qt.red)
+    palette.setColor(QPalette.Link, QColor(42, 130, 218))
+    palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+    palette.setColor(QPalette.HighlightedText, Qt.black)
+    app.setPalette(palette)
     window = VideoGeneratorApp()
     window.show()
     sys.exit(app.exec_())

@@ -162,6 +162,7 @@ class GenerationWorker(QThread):
             openai_helper = OpenAIHelper(self.api_key)
 
             self.progress_update.emit(5)
+            return
 
             # 2. Generating the scripts
             self.logger.info(f"Step 2/6: Generating Scripts")
@@ -219,7 +220,6 @@ class GenerationWorker(QThread):
             with open(os.path.join(output_dir, 'script.txt'), 'w', encoding='utf-8') as file:
                 file.write(total_script)
 
-            return
             # 3. Generate the thumbnail Image
             self.logger.info(f"Step 3/6: Generating Thumbnail")
             self.operation_update.emit("Generating Thumbnail")
