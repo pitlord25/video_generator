@@ -2,9 +2,11 @@ import sys
 import os
 import pickle
 import json
+from datetime import datetime, timedelta
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, 
-                            QWidget, QFileDialog, QLabel, QLineEdit, QProgressBar, QMessageBox)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+                            QWidget, QFileDialog, QLabel, QLineEdit, QProgressBar, QMessageBox,
+                            QDateTimeEdit, QCheckBox, QTextEdit, QGroupBox, QFormLayout)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDateTime
 import google.oauth2.credentials
 import google_auth_oauthlib.flow
 from googleapiclient.discovery import build
@@ -13,10 +15,12 @@ from google.auth.transport.requests import Request
 
 class UploadThread(QThread):
     progress_signal = pyqtSignal(int)
-    finished_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(str, str)  # URL and video ID
     error_signal = pyqtSignal(str)
+    status_signal = pyqtSignal(str)
     
-    def __init__(self, credentials, video_path, title, description, category, tags, privacy_status):
+    def __init__(self, credentials, video_path, title, description, category, tags, privacy_status, 
+                 thumbnail_path=None, publish_at=None, made_for_kids=False):
         super().__init__()
         self.credentials = credentials
         self.video_path = video_path
@@ -25,6 +29,9 @@ class UploadThread(QThread):
         self.category = category
         self.tags = tags.split(',') if tags else []
         self.privacy_status = privacy_status
+        self.thumbnail_path = thumbnail_path
+        self.publish_at = publish_at
+        self.made_for_kids = made_for_kids
         
     def run(self):
         try:
@@ -40,9 +47,17 @@ class UploadThread(QThread):
                     'categoryId': self.category
                 },
                 'status': {
-                    'privacyStatus': self.privacy_status
+                    'privacyStatus': self.privacy_status,
+                    'selfDeclaredMadeForKids': self.made_for_kids
                 }
             }
+            
+            # Add publish time if scheduled
+            if self.publish_at and self.privacy_status == 'public':
+                body['status']['publishAt'] = self.publish_at.isoformat()
+                body['status']['privacyStatus'] = 'private'  # Set to private until publish time
+            
+            self.status_signal.emit("Starting video upload...")
             
             # Set up the media file
             media = MediaFileUpload(
@@ -66,10 +81,42 @@ class UploadThread(QThread):
                     progress = int(status.progress() * 100)
                     self.progress_signal.emit(progress)
             
-            # Get the video URL
             video_id = response['id']
             video_url = f"https://www.youtube.com/watch?v={video_id}"
-            self.finished_signal.emit(video_url)
+            
+            self.status_signal.emit("Video uploaded successfully!")
+            
+            # Upload thumbnail if provided
+            if self.thumbnail_path and os.path.exists(self.thumbnail_path):
+                self.status_signal.emit("Uploading thumbnail...")
+                try:
+                    youtube.thumbnails().set(
+                        videoId=video_id,
+                        media_body=MediaFileUpload(self.thumbnail_path)
+                    ).execute()
+                    self.status_signal.emit("Thumbnail uploaded successfully!")
+                except Exception as e:
+                    self.status_signal.emit(f"Thumbnail upload failed: {str(e)}")
+            
+            # If set to public immediately (not scheduled), verify it's actually public
+            if self.privacy_status == 'public' and not self.publish_at:
+                self.status_signal.emit("Verifying video is public...")
+                try:
+                    # Get video details to verify status
+                    video_response = youtube.videos().list(
+                        part='status',
+                        id=video_id
+                    ).execute()
+                    
+                    actual_status = video_response['items'][0]['status']['privacyStatus']
+                    if actual_status == 'public':
+                        self.status_signal.emit("Video is now public and accessible!")
+                    else:
+                        self.status_signal.emit(f"Video uploaded but status is: {actual_status}")
+                except Exception as e:
+                    self.status_signal.emit(f"Could not verify video status: {str(e)}")
+            
+            self.finished_signal.emit(video_url, video_id)
             
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -80,6 +127,7 @@ class YouTubeUploader(QMainWindow):
         super().__init__()
         self.credentials = None
         self.video_path = None
+        self.thumbnail_path = None
         self.upload_thread = None
         self.token_path = "token.pickle"
         self.client_secrets_path = None
@@ -90,49 +138,80 @@ class YouTubeUploader(QMainWindow):
         self.load_credentials()
     
     def init_ui(self):
-        self.setWindowTitle("YouTube Video Uploader")
-        self.setMinimumSize(600, 500)
+        self.setWindowTitle("YouTube Video Uploader & Publisher")
+        self.setMinimumSize(700, 700)
         
         # Create central widget and layout
         central_widget = QWidget()
         main_layout = QVBoxLayout()
         
         # OAuth2 credentials section
+        oauth_group = QGroupBox("Authentication")
         oauth_layout = QHBoxLayout()
         self.oauth_status_label = QLabel("OAuth2 Status: Not Authenticated")
         self.load_oauth_button = QPushButton("Load OAuth2 Client File")
         self.load_oauth_button.clicked.connect(self.load_oauth_file)
         oauth_layout.addWidget(self.oauth_status_label)
         oauth_layout.addWidget(self.load_oauth_button)
-        main_layout.addLayout(oauth_layout)
+        oauth_group.setLayout(oauth_layout)
+        main_layout.addWidget(oauth_group)
         
-        # Video selection section
+        # File selection section
+        files_group = QGroupBox("File Selection")
+        files_layout = QVBoxLayout()
+        
+        # Video selection
         video_layout = QHBoxLayout()
         self.video_path_label = QLabel("No video selected")
         self.select_video_button = QPushButton("Select Video")
         self.select_video_button.clicked.connect(self.select_video)
         video_layout.addWidget(self.video_path_label)
         video_layout.addWidget(self.select_video_button)
-        main_layout.addLayout(video_layout)
+        files_layout.addLayout(video_layout)
+        
+        # Thumbnail selection
+        thumbnail_layout = QHBoxLayout()
+        self.thumbnail_path_label = QLabel("No thumbnail selected (optional)")
+        self.select_thumbnail_button = QPushButton("Select Thumbnail")
+        self.select_thumbnail_button.clicked.connect(self.select_thumbnail)
+        thumbnail_layout.addWidget(self.thumbnail_path_label)
+        thumbnail_layout.addWidget(self.select_thumbnail_button)
+        files_layout.addLayout(thumbnail_layout)
+        
+        files_group.setLayout(files_layout)
+        main_layout.addWidget(files_group)
         
         # Video details section
-        main_layout.addWidget(QLabel("Video Title:"))
+        details_group = QGroupBox("Video Details")
+        details_layout = QFormLayout()
+        
         self.title_input = QLineEdit()
-        main_layout.addWidget(self.title_input)
+        details_layout.addRow("Title:", self.title_input)
         
-        main_layout.addWidget(QLabel("Video Description:"))
-        self.description_input = QLineEdit()
-        main_layout.addWidget(self.description_input)
+        self.description_input = QTextEdit()
+        self.description_input.setMaximumHeight(100)
+        details_layout.addRow("Description:", self.description_input)
         
-        main_layout.addWidget(QLabel("Category ID:"))
         self.category_input = QLineEdit("22")  # Default: People & Blogs
-        main_layout.addWidget(self.category_input)
+        details_layout.addRow("Category ID:", self.category_input)
         
-        main_layout.addWidget(QLabel("Tags (comma separated):"))
         self.tags_input = QLineEdit()
-        main_layout.addWidget(self.tags_input)
+        details_layout.addRow("Tags (comma separated):", self.tags_input)
         
-        main_layout.addWidget(QLabel("Privacy Status:"))
+        self.made_for_kids_checkbox = QCheckBox("Made for kids")
+        details_layout.addRow("Content:", self.made_for_kids_checkbox)
+        
+        details_group.setLayout(details_layout)
+        main_layout.addWidget(details_group)
+        
+        # Publishing options section
+        publish_group = QGroupBox("Publishing Options")
+        publish_layout = QVBoxLayout()
+        
+        # Privacy status
+        privacy_label = QLabel("Privacy Status:")
+        publish_layout.addWidget(privacy_label)
+        
         privacy_layout = QHBoxLayout()
         self.privacy_public = QPushButton("Public")
         self.privacy_unlisted = QPushButton("Unlisted")
@@ -152,28 +231,64 @@ class YouTubeUploader(QMainWindow):
         privacy_layout.addWidget(self.privacy_public)
         privacy_layout.addWidget(self.privacy_unlisted)
         privacy_layout.addWidget(self.privacy_private)
-        main_layout.addLayout(privacy_layout)
+        publish_layout.addLayout(privacy_layout)
+        
+        # Scheduling
+        schedule_layout = QHBoxLayout()
+        self.schedule_checkbox = QCheckBox("Schedule publication")
+        self.schedule_checkbox.stateChanged.connect(self.toggle_schedule)
+        schedule_layout.addWidget(self.schedule_checkbox)
+        
+        self.schedule_datetime = QDateTimeEdit()
+        self.schedule_datetime.setDateTime(QDateTime.currentDateTime().addSecs(3600))  # 1 hour from now
+        self.schedule_datetime.setEnabled(False)
+        schedule_layout.addWidget(self.schedule_datetime)
+        
+        publish_layout.addLayout(schedule_layout)
+        
+        publish_group.setLayout(publish_layout)
+        main_layout.addWidget(publish_group)
         
         # Progress section
+        progress_group = QGroupBox("Upload Progress")
+        progress_layout = QVBoxLayout()
+        
         self.progress_bar = QProgressBar()
-        main_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.progress_bar)
         
         self.status_label = QLabel("Status: Ready")
-        main_layout.addWidget(self.status_label)
+        progress_layout.addWidget(self.status_label)
         
         self.result_url = QLineEdit()
         self.result_url.setReadOnly(True)
         self.result_url.setPlaceholderText("Video URL will appear here after upload")
-        main_layout.addWidget(self.result_url)
+        progress_layout.addWidget(self.result_url)
+        
+        progress_group.setLayout(progress_layout)
+        main_layout.addWidget(progress_group)
         
         # Upload button
-        self.upload_button = QPushButton("Upload to YouTube")
+        self.upload_button = QPushButton("Upload & Publish to YouTube")
         self.upload_button.clicked.connect(self.start_upload)
         self.upload_button.setEnabled(False)
+        self.upload_button.setStyleSheet("QPushButton { font-size: 14px; padding: 10px; }")
         main_layout.addWidget(self.upload_button)
         
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+    
+    def toggle_schedule(self, state):
+        self.schedule_datetime.setEnabled(state == Qt.Checked)
+        if state == Qt.Checked:
+            # Force public when scheduling
+            self.set_privacy("public")
+            self.privacy_public.setEnabled(False)
+            self.privacy_unlisted.setEnabled(False)
+            self.privacy_private.setEnabled(False)
+        else:
+            self.privacy_public.setEnabled(True)
+            self.privacy_unlisted.setEnabled(True)
+            self.privacy_private.setEnabled(True)
     
     def set_privacy(self, status):
         self.current_privacy = status
@@ -181,6 +296,14 @@ class YouTubeUploader(QMainWindow):
         self.privacy_public.setChecked(status == "public")
         self.privacy_unlisted.setChecked(status == "unlisted")
         self.privacy_private.setChecked(status == "private")
+        
+        # Update button text based on privacy
+        if status == "public":
+            self.upload_button.setText("Upload & Publish Publicly to YouTube")
+        elif status == "unlisted":
+            self.upload_button.setText("Upload as Unlisted to YouTube")
+        else:
+            self.upload_button.setText("Upload as Private to YouTube")
     
     def load_oauth_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -217,9 +340,15 @@ class YouTubeUploader(QMainWindow):
                     QMessageBox.critical(self, "Error", "Please load an OAuth2 client file first.")
                     return
                 
+                # Updated scopes for full YouTube access
+                scopes = [
+                    'https://www.googleapis.com/auth/youtube.upload',
+                    'https://www.googleapis.com/auth/youtube',
+                    'https://www.googleapis.com/auth/youtube.force-ssl'
+                ]
+                
                 flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
-                    self.client_secrets_path, 
-                    scopes=['https://www.googleapis.com/auth/youtube.upload']
+                    self.client_secrets_path, scopes=scopes
                 )
                 
                 # Open browser for authentication
@@ -265,6 +394,15 @@ class YouTubeUploader(QMainWindow):
             
             self.update_upload_button_state()
     
+    def select_thumbnail(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Thumbnail Image", "", "Image Files (*.jpg *.jpeg *.png *.gif *.bmp)")
+        
+        if file_path:
+            self.thumbnail_path = file_path
+            file_name = os.path.basename(file_path)
+            self.thumbnail_path_label.setText(f"Selected: {file_name}")
+    
     def update_upload_button_state(self):
         is_ready = (self.credentials is not None and 
                    self.credentials.valid and 
@@ -283,34 +421,57 @@ class YouTubeUploader(QMainWindow):
         
         # Get video details from input fields
         title = self.title_input.text()
-        description = self.description_input.text()
+        description = self.description_input.toPlainText()
         category = self.category_input.text()
         tags = self.tags_input.text()
         privacy_status = self.current_privacy
+        made_for_kids = self.made_for_kids_checkbox.isChecked()
         
         if not title:
             QMessageBox.warning(self, "Warning", "Please enter a title for the video.")
             return
         
+        # Handle scheduling
+        publish_at = None
+        if self.schedule_checkbox.isChecked():
+            publish_at = self.schedule_datetime.dateTime().toPyDateTime()
+            if publish_at <= datetime.now():
+                QMessageBox.warning(self, "Warning", "Please select a future date and time for scheduling.")
+                return
+        
+        # Confirm publication for public videos
+        if privacy_status == "public" and not self.schedule_checkbox.isChecked():
+            reply = QMessageBox.question(
+                self, "Confirm Publication", 
+                "Are you sure you want to publish this video publicly? It will be immediately visible to everyone on YouTube.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+        
         # Disable UI elements during upload
         self.upload_button.setEnabled(False)
         self.select_video_button.setEnabled(False)
+        self.select_thumbnail_button.setEnabled(False)
         self.load_oauth_button.setEnabled(False)
         
         # Reset progress bar
         self.progress_bar.setValue(0)
-        self.status_label.setText("Status: Uploading...")
+        self.status_label.setText("Status: Preparing upload...")
         
         # Create and start upload thread
         self.upload_thread = UploadThread(
             self.credentials, self.video_path, title, description, 
-            category, tags, privacy_status
+            category, tags, privacy_status, self.thumbnail_path, 
+            publish_at, made_for_kids
         )
         
         # Connect signals
         self.upload_thread.progress_signal.connect(self.update_progress)
         self.upload_thread.finished_signal.connect(self.upload_finished)
         self.upload_thread.error_signal.connect(self.upload_error)
+        self.upload_thread.status_signal.connect(self.update_status)
         
         # Start the thread
         self.upload_thread.start()
@@ -318,26 +479,38 @@ class YouTubeUploader(QMainWindow):
     def update_progress(self, progress):
         self.progress_bar.setValue(progress)
     
-    def upload_finished(self, url):
+    def update_status(self, status):
+        self.status_label.setText(f"Status: {status}")
+    
+    def upload_finished(self, url, video_id):
         # Re-enable UI elements
         self.upload_button.setEnabled(True)
         self.select_video_button.setEnabled(True)
+        self.select_thumbnail_button.setEnabled(True)
         self.load_oauth_button.setEnabled(True)
         
         # Update status
-        self.status_label.setText("Status: Upload Complete!")
         self.progress_bar.setValue(100)
         
         # Show URL
         self.result_url.setText(url)
         
-        # Show success message
-        QMessageBox.information(self, "Success", f"Video uploaded successfully!\nURL: {url}")
+        # Show success message with different text based on privacy status
+        if self.current_privacy == "public":
+            if self.schedule_checkbox.isChecked():
+                success_msg = f"Video uploaded and scheduled for publication!\nURL: {url}\nVideo ID: {video_id}"
+            else:
+                success_msg = f"Video uploaded and published publicly!\nURL: {url}\nVideo ID: {video_id}\n\nYour video is now live and can be viewed by anyone!"
+        else:
+            success_msg = f"Video uploaded successfully as {self.current_privacy}!\nURL: {url}\nVideo ID: {video_id}"
+        
+        QMessageBox.information(self, "Success", success_msg)
     
     def upload_error(self, error_msg):
         # Re-enable UI elements
         self.upload_button.setEnabled(True)
         self.select_video_button.setEnabled(True)
+        self.select_thumbnail_button.setEnabled(True)
         self.load_oauth_button.setEnabled(True)
         
         # Update status
