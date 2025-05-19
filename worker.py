@@ -162,7 +162,6 @@ class GenerationWorker(QThread):
             openai_helper = OpenAIHelper(self.api_key)
 
             self.progress_update.emit(5)
-            return
 
             # 2. Generating the scripts
             self.logger.info(f"Step 2/6: Generating Scripts")
