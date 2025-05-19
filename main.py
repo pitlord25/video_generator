@@ -751,6 +751,7 @@ class VideoGeneratorApp(QMainWindow):
 
     def generation_finished(self):
         self.logger.info("Video generation completed")
+        self.current_operation_label.setText("Generation completed")
         self.progress_bar.setValue(100)
         
         # Upload Progress Start
