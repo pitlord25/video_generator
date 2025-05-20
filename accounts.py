@@ -3,7 +3,7 @@ import pickle
 import json
 import base64
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                            QListWidget, QInputDialog, QMessageBox, QLineEdit,
+                            QListWidget, QInputDialog, QMessageBox, QLineEdit, QListWidgetItem,
                             QGroupBox)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QIcon
@@ -377,7 +377,7 @@ class AccountManagerDialog(QDialog):
             channel_title = account_info.get('channel_title', 'Unknown Channel')
             display_text = f"{name} ({channel_title})"
             
-            item = QListWidget.QListWidgetItem(display_text)
+            item = QListWidgetItem(display_text)
             item.setData(Qt.UserRole, name)  # Store actual account name
             self.account_list.addItem(item)
             
