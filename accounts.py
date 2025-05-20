@@ -1,6 +1,7 @@
 import os
 import pickle
 import json
+import base64  # Added for base64 encoding/decoding
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QListWidget, QInputDialog, QMessageBox, QLineEdit,
                             QComboBox, QGroupBox, QFrame, QSplitter)
@@ -45,7 +46,19 @@ class AccountManager:
             try:
                 with open(self.accounts_file, 'r') as f:
                     data = json.load(f)
-                    self.accounts = data.get('accounts', {})
+                    # Convert base64 string back to credentials bytes
+                    accounts_data = data.get('accounts', {})
+                    for name, account_info in accounts_data.items():
+                        if 'credentials' in account_info:
+                            try:
+                                # Decode the base64 string to bytes
+                                creds_bytes = base64.b64decode(account_info['credentials'])
+                                # Store the bytes directly
+                                account_info['credentials'] = creds_bytes
+                            except:
+                                self.log(f"Failed to decode credentials for account {name}", "error")
+                    
+                    self.accounts = accounts_data
                     self.current_account = data.get('current_account')
                 self.log(f"Loaded {len(self.accounts)} accounts")
             except Exception as e:
@@ -56,10 +69,21 @@ class AccountManager:
     def save_accounts(self):
         """Save accounts to file"""
         try:
+            # Create a copy of accounts to modify for JSON serialization
+            serializable_accounts = {}
+            for name, account_info in self.accounts.items():
+                serializable_account = account_info.copy()
+                if 'credentials' in serializable_account:
+                    # Convert credentials bytes to base64 encoded string for JSON serialization
+                    credentials_bytes = serializable_account['credentials']
+                    serializable_account['credentials'] = base64.b64encode(credentials_bytes).decode('utf-8')
+                serializable_accounts[name] = serializable_account
+            
             data = {
-                'accounts': self.accounts,
+                'accounts': serializable_accounts,
                 'current_account': self.current_account
             }
+            
             with open(self.accounts_file, 'w') as f:
                 json.dump(data, f, indent=2)
             self.log(f"Saved {len(self.accounts)} accounts")
@@ -101,7 +125,7 @@ class AccountManager:
                 # Get the first channel as the default identifier
                 channel_name = response['items'][0]['snippet']['title']
                 
-                # Serialize credentials to string
+                # Serialize credentials to bytes
                 credentials_bytes = pickle.dumps(credentials)
                 
                 # Store account
@@ -271,6 +295,25 @@ class AccountManagerDialog(QDialog):
         
         main_layout = QVBoxLayout(self)
         
+        # Client secrets file selection
+        secrets_group = QGroupBox("OAuth Client Configuration")
+        secrets_layout = QHBoxLayout()
+        
+        self.secrets_path_edit = QLineEdit()
+        self.secrets_path_edit.setReadOnly(True)
+        if self.account_manager.client_secrets_file:
+            self.secrets_path_edit.setText(self.account_manager.client_secrets_file)
+        
+        self.secrets_browse_btn = QPushButton("Browse...")
+        self.secrets_browse_btn.clicked.connect(self.select_client_secrets)
+        
+        secrets_layout.addWidget(QLabel("Client Secrets File:"))
+        secrets_layout.addWidget(self.secrets_path_edit, 1)
+        secrets_layout.addWidget(self.secrets_browse_btn)
+        
+        secrets_group.setLayout(secrets_layout)
+        main_layout.addWidget(secrets_group)
+        
         # Account list
         accounts_group = QGroupBox("Accounts")
         accounts_layout = QVBoxLayout()
@@ -286,6 +329,7 @@ class AccountManagerDialog(QDialog):
         
         self.add_account_btn = QPushButton("Add Account")
         self.add_account_btn.clicked.connect(self.add_account)
+        self.add_account_btn.setEnabled(bool(self.account_manager.client_secrets_file))
         
         self.rename_account_btn = QPushButton("Rename")
         self.rename_account_btn.clicked.connect(self.rename_account)
