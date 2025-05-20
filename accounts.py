@@ -490,7 +490,7 @@ class AccountManagerDialog(QDialog):
         """Accept dialog and emit signal with selected account"""
         if self.account_manager.current_account:
             credentials = self.account_manager.get_current_credentials()
-            channel_title = self.account_manager.accounts[self.account_manager.current_account].get('Channel Info', 'Unknown Channel')
+            channel_title = self.account_manager.accounts[self.account_manager.current_account].get('channel_title', 'Unknown Channel')
             if credentials:
                 self.account_changed.emit(self.account_manager.current_account, credentials, channel_title)
                 super().accept()
