@@ -1,16 +1,9 @@
-import os
-import time
-import http.client
-import httplib2
-import random
-import sys
-import threading
+import os, time
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
-from google.auth.transport.requests import Request
 
 
 class UploadThread(QThread):

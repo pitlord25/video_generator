@@ -3,10 +3,8 @@ import pickle
 import json
 import base64  # Added for base64 encoding/decoding
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                            QListWidget, QInputDialog, QMessageBox, QLineEdit,
-                            QComboBox, QGroupBox, QFrame, QSplitter)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QIcon
+                            QListWidget, QInputDialog, QMessageBox, QComboBox, QGroupBox)
+from PyQt5.QtCore import pyqtSignal
 import google_auth_oauthlib.flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
