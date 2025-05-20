@@ -1,10 +1,12 @@
 import os
 import pickle
 import json
-import base64  # Added for base64 encoding/decoding
+import base64
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                            QListWidget, QInputDialog, QMessageBox, QComboBox, QGroupBox)
-from PyQt5.QtCore import pyqtSignal
+                            QListWidget, QInputDialog, QMessageBox, QLineEdit,
+                            QComboBox, QGroupBox, QFrame, QSplitter)
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QIcon
 import google_auth_oauthlib.flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -258,18 +260,61 @@ class AccountManager:
         """Get channels for credentials"""
         try:
             youtube = build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
-            
-            response = youtube.channels().list(
-                part="snippet",
-                mine=True
-            ).execute()
-            
             channels = []
-            for channel in response.get("items", []):
-                channels.append({
-                    "id": channel["id"],
-                    "title": channel["snippet"]["title"]
-                })
+            
+            # First get the channels where the user is the owner (primary channel)
+            try:
+                primary_response = youtube.channels().list(
+                    part="snippet,contentDetails",
+                    mine=True
+                ).execute()
+                
+                for channel in primary_response.get("items", []):
+                    channels.append({
+                        "id": channel["id"],
+                        "title": channel["snippet"]["title"],
+                        "is_primary": True
+                    })
+                    self.log(f"Found primary channel: {channel['snippet']['title']}")
+            except Exception as e:
+                self.log(f"Error getting primary channel: {str(e)}", "error")
+            
+            # Then get managed channels (channels the user has access to)
+            try:
+                managed_response = youtube.channels().list(
+                    part="snippet,contentDetails",
+                    managedByMe=True
+                ).execute()
+                
+                for channel in managed_response.get("items", []):
+                    # Check if we already have this channel (to avoid duplicates)
+                    if not any(c["id"] == channel["id"] for c in channels):
+                        channels.append({
+                            "id": channel["id"],
+                            "title": channel["snippet"]["title"],
+                            "is_primary": False
+                        })
+                        self.log(f"Found managed channel: {channel['snippet']['title']}")
+            except Exception as e:
+                self.log(f"Error getting managed channels: {str(e)}", "error")
+            
+            # If still no channels found, try to get all channels the user has any access to
+            if not channels:
+                try:
+                    content_owner_response = youtube.channels().list(
+                        part="snippet",
+                        onBehalfOfContentOwner="true"
+                    ).execute()
+                    
+                    for channel in content_owner_response.get("items", []):
+                        channels.append({
+                            "id": channel["id"],
+                            "title": channel["snippet"]["title"],
+                            "is_primary": False
+                        })
+                        self.log(f"Found content owner channel: {channel['snippet']['title']}")
+                except Exception as e:
+                    self.log(f"Error getting content owner channels: {str(e)}", "warning")
             
             return channels
         except Exception as e:
@@ -408,7 +453,11 @@ class AccountManagerDialog(QDialog):
         
         if channels:
             for channel in channels:
-                self.channel_combo.addItem(channel['title'], channel['id'])
+                # Mark primary channels with an asterisk
+                title = channel['title']
+                if channel.get('is_primary', False):
+                    title = f"{title} *"
+                self.channel_combo.addItem(title, channel['id'])
             
             self.channel_combo.setEnabled(True)
         else:
@@ -479,7 +528,7 @@ class AccountManagerDialog(QDialog):
         if self.channel_combo.currentIndex() >= 0:
             return {
                 'id': self.channel_combo.currentData(),
-                'title': self.channel_combo.currentText()
+                'title': self.channel_combo.currentText().replace(" *", "")  # Remove primary indicator
             }
         return None
     
