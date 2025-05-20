@@ -319,7 +319,6 @@ class AccountManagerDialog(QDialog):
         accounts_layout = QVBoxLayout()
         
         self.account_list = QListWidget()
-        self.account_list.itemClicked.connect(self.on_account_selected)
         self.refresh_account_list()
         
         accounts_layout.addWidget(self.account_list)
@@ -381,21 +380,9 @@ class AccountManagerDialog(QDialog):
         button_layout.addWidget(self.cancel_btn)
         
         main_layout.addLayout(button_layout)
-        
-    def select_client_secrets(self):
-        """Open file dialog to select client secrets file"""
-        from PyQt5.QtWidgets import QFileDialog
-        
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, 'Select Google OAuth2 Client Secrets File', 
-            '', 'JSON Files (*.json);;All Files (*)'
-        )
-        
-        if file_path:
-            self.secrets_path_edit.setText(file_path)
-            self.account_manager.set_client_secrets_file(file_path)
-            self.add_account_btn.setEnabled(True)
-    
+
+        self.account_list.itemClicked.connect(self.on_account_selected)
+            
     def refresh_account_list(self):
         """Refresh the accounts list widget"""
         self.account_list.clear()
