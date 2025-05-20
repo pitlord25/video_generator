@@ -14,7 +14,8 @@ from googleapiclient.discovery import build
 # Constants
 SCOPES = [
     'https://www.googleapis.com/auth/youtube.upload',
-    'https://www.googleapis.com/auth/youtube.readonly'
+    'https://www.googleapis.com/auth/youtube.readonly',
+    'https://www.googleapis.com/auth/youtubepartner-channel-audit'
 ]
 API_SERVICE_NAME = 'youtube'
 API_VERSION = 'v3'
