@@ -282,7 +282,7 @@ class AccountManager:
 class AccountManagerDialog(QDialog):
     """Dialog for managing Google accounts"""
     
-    account_changed = pyqtSignal(str, object)  # Signal when account is changed (name, credentials)
+    account_changed = pyqtSignal(str, object, object)  # Signal when account is changed (name, credentials)
     
     def __init__(self, account_manager, parent=None):
         super().__init__(parent)
