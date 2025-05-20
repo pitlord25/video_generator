@@ -71,6 +71,7 @@ class UploadThread(QThread):
             # Add scheduled publishing if specified
             if self.publish_at and self.privacy_status == 'public':
                 body['status']['publishAt'] = self.publish_at.isoformat()
+                body['status']['privacyStatus'] = 'private'  # Set to private until publish time
                 
             # Set up the media file upload
             media = MediaFileUpload(
