@@ -784,8 +784,6 @@ class VideoGeneratorApp(QMainWindow):
         publish_at = None
         if self.schedule_checkbox.isChecked():
             publish_at = self.schedule_datetime.dateTime().toPyDateTime()
-            
-        channel_id = self.selected_channel
         
         self.youtube_upload_progress_bar.setValue(0)
         self.youtube_status_label.setText("Status: Preparing upload...")
@@ -861,9 +859,10 @@ class VideoGeneratorApp(QMainWindow):
             # Account selected and dialog accepted
             self.logger.info(f"Selected account: {self.account_manager.current_account}")
 
-    def on_account_changed(self, account_name, credentials):
+    def on_account_changed(self, account_name, credentials, channel_title):
         self.credentials = credentials  # Save current account's credentials
         self.account_name_edit.setText(account_name)
+        self.channel_edit.setText(channel_title)
     
     def on_channel_selected(self, index):
         if index >= 0:

@@ -301,7 +301,7 @@ class AccountManager:
 class AccountManagerDialog(QDialog):
     """Dialog for managing Google accounts"""
     
-    account_changed = pyqtSignal(str, object)  # Signal when account is changed (name, credentials, channel)
+    account_changed = pyqtSignal(str, object, str)  # Signal when account is changed (name, credentials, channel)
     
     def __init__(self, account_manager, parent=None):
         super().__init__(parent)
@@ -488,7 +488,7 @@ class AccountManagerDialog(QDialog):
         if self.account_manager.current_account:
             credentials = self.account_manager.get_current_credentials()
             if credentials:
-                self.account_changed.emit(self.account_manager.current_account, credentials)
+                self.account_changed.emit(self.account_manager.current_account, credentials, self.account_manager.account_info.get('Channel Info', 'Unknown Channel'))
                 super().accept()
             else:
                 QMessageBox.critical(self, "Error", "Could not get account credentials")
