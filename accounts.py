@@ -10,6 +10,7 @@ from PyQt5.QtGui import QIcon
 import google_auth_oauthlib.flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # Constants
 SCOPES = [
@@ -282,42 +283,55 @@ class AccountManager:
             except Exception as e:
                 self.log(f"Error getting primary channel: {str(e)}", "error")
             
-            # Then get managed channels (channels the user has access to)
-            try:
-                managed_response = youtube.channels().list(
-                    part="snippet,contentDetails",
-                    managedByMe=True
-                ).execute()
-                
-                for channel in managed_response.get("items", []):
-                    # Check if we already have this channel (to avoid duplicates)
-                    if not any(c["id"] == channel["id"] for c in channels):
-                        channels.append({
-                            "id": channel["id"],
-                            "title": channel["snippet"]["title"],
-                            "is_primary": False
-                        })
-                        self.log(f"Found managed channel: {channel['snippet']['title']}")
-            except Exception as e:
-                self.log(f"Error getting managed channels: {str(e)}", "error")
+            # Now, get all brand accounts (additional channels)
+            # We need to use the YouTube Partner API for this
+            youtube_partner = build(
+                'youtubePartner', 'v1', 
+                credentials=credentials,
+                discoveryServiceUrl='https://www.googleapis.com/discovery/v1/apis/youtubePartner/v1/rest'
+            )
             
-            # If still no channels found, try to get all channels the user has any access to
-            if not channels:
-                try:
-                    content_owner_response = youtube.channels().list(
-                        part="snippet",
-                        onBehalfOfContentOwner="true"
-                    ).execute()
+            try:
+                # Get all brand accounts that the user has access to
+                brand_accounts_request = youtube_partner.channels().list()
+                brand_accounts_response = brand_accounts_request.execute()
+                
+                # Alternative approach using YouTube API v3 directly
+                if not brand_accounts_response.get('items'):
+                    # Use Channel Section API to get linked channels
+                    sections_request = youtube.channelSections().list(
+                        part="snippet,contentDetails",
+                        mine=True
+                    )
+                    sections_response = sections_request.execute()
                     
-                    for channel in content_owner_response.get("items", []):
-                        channels.append({
-                            "id": channel["id"],
-                            "title": channel["snippet"]["title"],
-                            "is_primary": False
-                        })
-                        self.log(f"Found content owner channel: {channel['snippet']['title']}")
-                except Exception as e:
-                    self.log(f"Error getting content owner channels: {str(e)}", "warning")
+                    # Extract channel IDs from sections
+                    for section in sections_response.get('items', []):
+                        if section.get('snippet', {}).get('type') == 'multiplechannels':
+                            channel_ids = section.get('contentDetails', {}).get('channels', [])
+                            if channel_ids:
+                                channels_request = youtube.channels().list(
+                                    part="snippet",
+                                    id=','.join(channel_ids)
+                                )
+                                channels_response = channels_request.execute()
+                                print(channels_response)
+                else:
+                    print(channels_response)
+
+            except HttpError as e:
+                print(f"Error accessing YouTube Partner API: {e}")
+                
+                # Alternative approach - use Channel list endpoint with managedByMe=true
+                try:
+                    managed_channels_request = youtube.channels().list(
+                        part="snippet",
+                        managedByMe=True
+                    )
+                    managed_channels_response = managed_channels_request.execute()
+                    # all_channels.extend(managed_channels_response.get('items', []))
+                except HttpError as e2:
+                    print(f"Error accessing managed channels: {e2}")
             
             return channels
         except Exception as e:
