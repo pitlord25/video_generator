@@ -294,26 +294,7 @@ class AccountManagerDialog(QDialog):
         self.setMinimumSize(600, 400)
         
         main_layout = QVBoxLayout(self)
-        
-        # Client secrets file selection
-        secrets_group = QGroupBox("OAuth Client Configuration")
-        secrets_layout = QHBoxLayout()
-        
-        self.secrets_path_edit = QLineEdit()
-        self.secrets_path_edit.setReadOnly(True)
-        if self.account_manager.client_secrets_file:
-            self.secrets_path_edit.setText(self.account_manager.client_secrets_file)
-        
-        self.secrets_browse_btn = QPushButton("Browse...")
-        self.secrets_browse_btn.clicked.connect(self.select_client_secrets)
-        
-        secrets_layout.addWidget(QLabel("Client Secrets File:"))
-        secrets_layout.addWidget(self.secrets_path_edit, 1)
-        secrets_layout.addWidget(self.secrets_browse_btn)
-        
-        secrets_group.setLayout(secrets_layout)
-        main_layout.addWidget(secrets_group)
-        
+                
         # Account list
         accounts_group = QGroupBox("Accounts")
         accounts_layout = QVBoxLayout()
