@@ -10,25 +10,16 @@ import google_auth_oauthlib.flow
 from google.auth.transport.requests import Request
 from utils import get_default_settings, get_settings_filepath
 from worker import GenerationWorker
-from PyQt5.QtGui import QIcon, QFont, QPalette, QColor
+from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtCore import Qt, QSize, QDateTime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QFileDialog,
                              QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy,
-                             QMessageBox, QTabWidget, QFrame, QScrollArea, QStyle, QStyleFactory,
+                             QMessageBox, QTabWidget, QScrollArea, QStyleFactory,
                              QCheckBox, QDateTimeEdit)
 
 from accounts import AccountManagerDialog, AccountManager  # Your account logic
 from uploader import UploadThread
-from googleapiclient.discovery import build
-
-# If modifying these scopes, delete your previously saved credentials
-SCOPES = [
-    'https://www.googleapis.com/auth/youtube.upload',
-    'https://www.googleapis.com/auth/youtube.readonly'
-]
-API_SERVICE_NAME = 'youtube'
-API_VERSION = 'v3'
 
 
 class VideoGeneratorApp(QMainWindow):
