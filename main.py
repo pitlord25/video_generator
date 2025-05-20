@@ -921,8 +921,8 @@ class VideoGeneratorApp(QMainWindow):
             self.channel_combo.clear()
             
             response = youtube.channels().list(
-                # part="snippet",
-                mine=True
+                part="snippet",
+                # mine=True
             ).execute()
             
             for channel in response.get("items", []):
