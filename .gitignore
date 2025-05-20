@@ -7,3 +7,4 @@ main.spec
 __pycache__
 output
 token.pickle
+google_auth.json

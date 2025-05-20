@@ -18,9 +18,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QMessageBox, QTabWidget, QFrame, QScrollArea, QStyle, QStyleFactory,
                              QCheckBox, QDateTimeEdit, QComboBox)
 
+from accounts import AccountManagerDialog, AccountManager  # Your account logic
 from uploader import UploadThread
 from googleapiclient.discovery import build
-
 
 # If modifying these scopes, delete your previously saved credentials
 SCOPES = [
@@ -47,6 +47,13 @@ class VideoGeneratorApp(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
         self.setMaximumSize(1920, 1080)
         self.setMinimumSize(900, 700)
+        
+        self.account_manager = AccountManager(
+            accounts_file=os.path.join(current_directory, 'accounts.json'),
+            client_secrets_file=os.path.join(current_directory, 'google_auth.json'),
+            logger=self.logger
+        )
+        self.selected_channel = None  # Store selected channel (dict with 'id' and 'title')
 
         # Create central widget
         central_widget = QWidget()
@@ -495,6 +502,10 @@ class VideoGeneratorApp(QMainWindow):
         self.google_client_id_edit.setPlaceholderText("No credentials loaded")
         self.google_client_id_edit.setStyleSheet("padding: 8px;")
         
+        account_label = QLabel("YouTube Account:")
+        self.account_combo = QComboBox()
+        self.account_combo.setStyleSheet("padding: 8px;")
+        
         channel_combo_label = QLabel("Channel:")
         self.channel_combo = QComboBox()
         self.channel_combo.setStyleSheet("padding: 8px;")
@@ -517,12 +528,14 @@ class VideoGeneratorApp(QMainWindow):
 
         credential_detail_layout.addWidget(client_id_label, 0, 0)
         credential_detail_layout.addWidget(self.google_client_id_edit, 0, 1)
-        credential_detail_layout.addWidget(channel_combo_label, 1, 0)
-        credential_detail_layout.addWidget(self.channel_combo, 1, 1)
-        credential_detail_layout.addWidget(category_id_label, 2, 0)
-        credential_detail_layout.addWidget(self.category_id_edit, 2, 1)
-        credential_detail_layout.addWidget(self.schedule_checkbox, 3, 0)
-        credential_detail_layout.addWidget(self.schedule_datetime, 3, 1)
+        credential_detail_layout.addWidget(account_label, 1, 0)
+        credential_detail_layout.addWidget(self.account_combo, 1, 1)
+        credential_detail_layout.addWidget(channel_combo_label, 2, 0)
+        credential_detail_layout.addWidget(self.channel_combo, 2, 1)
+        credential_detail_layout.addWidget(category_id_label, 3, 0)
+        credential_detail_layout.addWidget(self.category_id_edit, 3, 1)
+        credential_detail_layout.addWidget(self.schedule_checkbox, 4, 0)
+        credential_detail_layout.addWidget(self.schedule_datetime, 4, 1)
 
         credential_control_layout = QHBoxLayout()
 
@@ -865,6 +878,12 @@ class VideoGeneratorApp(QMainWindow):
                 self, 'Error', f'Authentication failed: {str(e)}')
 
     def load_youtube_credential(self):
+        dialog = AccountManagerDialog(self.account_manager, self)
+        dialog.account_changed.connect(self.on_account_changed)
+        if dialog.exec_():
+            # Account selected and dialog accepted
+            self.logger.info(f"Selected account: {self.account_manager.current_account}")
+        return
         file_path, _ = QFileDialog.getOpenFileName(
             self, 'Load Google OAuth2 Client Secrets', '', 'JSON Files (*.json);;All Files (*)')
 
@@ -893,6 +912,30 @@ class VideoGeneratorApp(QMainWindow):
             # If no saved credentials, get new ones
             self.get_credentials()
 
+    def on_account_changed(self, account_name, credentials):
+        self.credentials = credentials  # Save current account's credentials
+        self.google_client_id_edit.setText(account_name)
+
+        channels = self.account_manager.get_account_channels(account_name)
+        self.channel_combo.clear()
+        for channel in channels:
+            self.channel_combo.addItem(channel['title'], channel['id'])
+
+        if channels:
+            self.selected_channel = channels[0]  # Default to first
+            self.channel_combo.setCurrentIndex(0)
+        else:
+            self.selected_channel = None
+
+        self.channel_combo.currentIndexChanged.connect(self.on_channel_selected)
+    
+    def on_channel_selected(self, index):
+        if index >= 0:
+            self.selected_channel = {
+                'title': self.channel_combo.currentText(),
+                'id': self.channel_combo.itemData(index)
+            }
+        
     def load_credential_info(self):
         if not self.credentials:
             return

@@ -1,38 +1,60 @@
+import os
+import time
+import http.client
+import httplib2
+import random
+import sys
+import threading
+
 from PyQt5.QtCore import QThread, pyqtSignal
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
-import os
+from google.auth.transport.requests import Request
 
-# If modifying these scopes, delete your previously saved credentials
-API_SERVICE_NAME = 'youtube'
-API_VERSION = 'v3'
 
 class UploadThread(QThread):
-    progress_signal = pyqtSignal(int)
-    finished_signal = pyqtSignal(str, str)  # URL and video ID
-    error_signal = pyqtSignal(str)
-    status_signal = pyqtSignal(str)
+    """Thread for uploading videos to YouTube"""
     
-    def __init__(self, credentials, video_path, title, description, category, tags, privacy_status, 
-                 thumbnail_path=None, publish_at=None, made_for_kids=False):
+    # Signals
+    progress_signal = pyqtSignal(int)
+    status_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(str, str)  # url, video_id
+    error_signal = pyqtSignal(str)
+    
+    def __init__(self, credentials, video_path, title, description, 
+                 category, tags, privacy_status, thumbnail_path=None, 
+                 publish_at=None, made_for_kids=False, channel_id=None):
         super().__init__()
+        
         self.credentials = credentials
         self.video_path = video_path
         self.title = title
         self.description = description
         self.category = category
-        self.tags = tags.split(',') if tags else []
+        self.tags = tags.split(",") if tags else []
         self.privacy_status = privacy_status
         self.thumbnail_path = thumbnail_path
         self.publish_at = publish_at
         self.made_for_kids = made_for_kids
+        self.channel_id = channel_id
+        
+        # Required for tracking upload progress
+        self.progress = 0
+        self.last_progress_time = 0
+        self.running = True
         
     def run(self):
+        """Upload the video to YouTube"""
         try:
-            # Create YouTube service
+            if not os.path.exists(self.video_path):
+                self.error_signal.emit(f"Video file not found: {self.video_path}")
+                return
+                
+            # Build the YouTube service
             youtube = build('youtube', 'v3', credentials=self.credentials)
             
-            # Define the video metadata
+            # Set up video metadata
             body = {
                 'snippet': {
                     'title': self.title,
@@ -46,89 +68,86 @@ class UploadThread(QThread):
                 }
             }
             
-            # Add publish time if scheduled
+            # Add scheduled publishing if specified
             if self.publish_at and self.privacy_status == 'public':
-                body['status']['publishAt'] = self.publish_at.isoformat()
-                body['status']['privacyStatus'] = 'private'  # Set to private until publish time
-            
-            self.status_signal.emit("Starting video upload...")
-            
-            # Set up the media file
+                body['status']['publishAt'] = self.publish_at.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+                
+            # Add channel ID if specified
+            if self.channel_id:
+                body['snippet']['channelId'] = self.channel_id
+                
+            # Set up the media file upload
             media = MediaFileUpload(
                 self.video_path,
-                chunksize=1024*1024,
+                chunksize=1024*1024,  # 1MB chunks
                 resumable=True
             )
             
-            # Create the insert request
+            # Start the upload
+            self.status_signal.emit("Starting upload...")
             insert_request = youtube.videos().insert(
                 part=','.join(body.keys()),
                 body=body,
                 media_body=media
             )
             
-            # Upload the video with progress tracking
+            # Monitor upload progress
             response = None
-            while response is None:
+            while response is None and self.running:
                 status, response = insert_request.next_chunk()
                 if status:
                     progress = int(status.progress() * 100)
+                    self.progress = progress
                     self.progress_signal.emit(progress)
-            
+                    self.status_signal.emit(f"Uploading: {progress}%")
+                    
+                    # Throttle progress updates
+                    current_time = time.time()
+                    if current_time - self.last_progress_time > 0.5:  # Update every 0.5 seconds max
+                        self.last_progress_time = current_time
+                        
+            if not self.running:
+                self.error_signal.emit("Upload cancelled")
+                return
+                
+            # Get the video ID
             video_id = response['id']
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
-            
-            self.status_signal.emit("Video uploaded successfully!")
             
             # Upload thumbnail if provided
             if self.thumbnail_path and os.path.exists(self.thumbnail_path):
-                self.status_signal.emit("Uploading thumbnail...")
                 try:
-                    # Check if file size is within YouTube's limits (2MB)
-                    file_size = os.path.getsize(self.thumbnail_path)
-                    if file_size > 2 * 1024 * 1024:  # 2MB in bytes
-                        self.status_signal.emit("Thumbnail too large (max 2MB), skipping...")
-                    else:
-                        youtube.thumbnails().set(
-                            videoId=video_id,
-                            media_body=MediaFileUpload(self.thumbnail_path)
-                        ).execute()
-                        self.status_signal.emit("Thumbnail uploaded successfully!")
-                except Exception as e:
-                    # Don't fail the entire upload for thumbnail issues
-                    error_msg = str(e)
-                    if "insufficient permission" in error_msg.lower():
-                        self.status_signal.emit("Thumbnail upload requires additional permissions - video uploaded successfully without custom thumbnail")
-                    else:
-                        self.status_signal.emit(f"Thumbnail upload failed: {error_msg}")
-            
-            # If set to public immediately (not scheduled), try to verify it's actually public
-            if self.privacy_status == 'public' and not self.publish_at:
-                self.status_signal.emit("Verifying video is public...")
-                try:
-                    # Get video details to verify status
-                    video_response = youtube.videos().list(
-                        part='status',
-                        id=video_id
+                    self.status_signal.emit("Uploading thumbnail...")
+                    youtube.thumbnails().set(
+                        videoId=video_id,
+                        media_body=MediaFileUpload(self.thumbnail_path)
                     ).execute()
+                except HttpError as e:
+                    self.status_signal.emit(f"Thumbnail upload failed: {str(e)}")
                     
-                    if video_response['items']:
-                        actual_status = video_response['items'][0]['status']['privacyStatus']
-                        if actual_status == 'public':
-                            self.status_signal.emit("Video is now public and accessible!")
-                        else:
-                            self.status_signal.emit(f"Video uploaded but status is: {actual_status}")
-                    else:
-                        self.status_signal.emit("Video uploaded successfully!")
-                except Exception as e:
-                    # Don't fail for status check issues
-                    error_msg = str(e)
-                    if "insufficient permission" in error_msg.lower():
-                        self.status_signal.emit("Video uploaded successfully! (Cannot verify status due to permissions)")
-                    else:
-                        self.status_signal.emit("Video uploaded successfully! (Status verification unavailable)")
+            # Prepare video URL
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
             
+            # Signal completion
+            self.progress_signal.emit(100)
+            
+            # Determine final status message
+            if self.publish_at and self.privacy_status == 'public':
+                status_msg = f"Video scheduled for {self.publish_at.strftime('%Y-%m-%d %H:%M')}"
+            else:
+                status_msg = f"Video {self.privacy_status} at {video_url}"
+                
+            self.status_signal.emit(status_msg)
             self.finished_signal.emit(video_url, video_id)
-            
+            return video_id
+        
+        except HttpError as e:
+            error_content = e.content.decode('utf-8') if hasattr(e, 'content') else str(e)
+            self.error_signal.emit(f"HTTP Error: {error_content}")
+            return None
         except Exception as e:
-            self.error_signal.emit(str(e))
+            self.error_signal.emit(f"Error: {str(e)}")
+            return None
+            
+    def cancel(self):
+        """Cancel the upload"""
+        self.running = False
