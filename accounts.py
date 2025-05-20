@@ -489,8 +489,9 @@ class AccountManagerDialog(QDialog):
         """Accept dialog and emit signal with selected account"""
         if self.account_manager.current_account:
             credentials = self.account_manager.get_current_credentials()
+            channel = self.get_selected_channel()
             if credentials:
-                self.account_changed.emit(self.account_manager.current_account, credentials)
+                self.account_changed.emit(self.account_manager.current_account, channel)
                 super().accept()
             else:
                 QMessageBox.critical(self, "Error", "Could not get account credentials")

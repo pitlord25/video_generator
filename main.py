@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QFileDialog,
                              QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy,
                              QMessageBox, QTabWidget, QFrame, QScrollArea, QStyle, QStyleFactory,
-                             QCheckBox, QDateTimeEdit, QComboBox)
+                             QCheckBox, QDateTimeEdit)
 
 from accounts import AccountManagerDialog, AccountManager  # Your account logic
 from uploader import UploadThread
@@ -496,19 +496,17 @@ class VideoGeneratorApp(QMainWindow):
 
         credential_detail_layout = QGridLayout()
 
-        client_id_label = QLabel("Client ID:")
-        self.google_client_id_edit = QLineEdit()
-        self.google_client_id_edit.setReadOnly(True)
-        self.google_client_id_edit.setPlaceholderText("No credentials loaded")
-        self.google_client_id_edit.setStyleSheet("padding: 8px;")
-        
-        account_label = QLabel("YouTube Account:")
-        self.account_combo = QComboBox()
-        self.account_combo.setStyleSheet("padding: 8px;")
-        
+        account_name_label = QLabel("Account:")
+        self.account_name_edit = QLineEdit()
+        self.account_name_edit.setReadOnly(True)
+        self.account_name_edit.setPlaceholderText("No credentials loaded")
+        self.account_name_edit.setStyleSheet("padding: 8px;")
+                
         channel_combo_label = QLabel("Channel:")
-        self.channel_combo = QComboBox()
-        self.channel_combo.setStyleSheet("padding: 8px;")
+        self.channel_edit = QLineEdit()
+        self.channel_edit.setReadOnly(True)
+        self.channel_edit.setPlaceholderText("No channel selected")
+        self.channel_edit.setStyleSheet("padding: 8px;")
 
         category_id_label = QLabel("Category ID:")
         self.category_id_edit = QLineEdit()
@@ -526,16 +524,14 @@ class VideoGeneratorApp(QMainWindow):
         self.schedule_datetime.setEnabled(False)
         self.schedule_datetime.setStyleSheet("padding: 8px;")
 
-        credential_detail_layout.addWidget(client_id_label, 0, 0)
-        credential_detail_layout.addWidget(self.google_client_id_edit, 0, 1)
-        credential_detail_layout.addWidget(account_label, 1, 0)
-        credential_detail_layout.addWidget(self.account_combo, 1, 1)
-        credential_detail_layout.addWidget(channel_combo_label, 2, 0)
-        credential_detail_layout.addWidget(self.channel_combo, 2, 1)
-        credential_detail_layout.addWidget(category_id_label, 3, 0)
-        credential_detail_layout.addWidget(self.category_id_edit, 3, 1)
-        credential_detail_layout.addWidget(self.schedule_checkbox, 4, 0)
-        credential_detail_layout.addWidget(self.schedule_datetime, 4, 1)
+        credential_detail_layout.addWidget(account_name_label, 0, 0)
+        credential_detail_layout.addWidget(self.account_name_edit, 0, 1)
+        credential_detail_layout.addWidget(channel_combo_label, 1, 0)
+        credential_detail_layout.addWidget(self.channel_edit, 1, 1)
+        credential_detail_layout.addWidget(category_id_label, 2, 0)
+        credential_detail_layout.addWidget(self.category_id_edit, 2, 1)
+        credential_detail_layout.addWidget(self.schedule_checkbox, 3, 0)
+        credential_detail_layout.addWidget(self.schedule_datetime, 3, 1)
 
         credential_control_layout = QHBoxLayout()
 
@@ -912,28 +908,29 @@ class VideoGeneratorApp(QMainWindow):
             # If no saved credentials, get new ones
             self.get_credentials()
 
-    def on_account_changed(self, account_name, credentials):
+    def on_account_changed(self, account_name, credentials, channel_info):
         self.credentials = credentials  # Save current account's credentials
-        self.google_client_id_edit.setText(account_name)
+        self.account_name_edit.setText(account_name)
+        self.channel_edit.setText(channel_info['title'])
 
-        channels = self.account_manager.get_account_channels(account_name)
-        self.channel_combo.clear()
-        for channel in channels:
-            self.channel_combo.addItem(channel['title'], channel['id'])
+        # channels = self.account_manager.get_account_channels(account_name)
+        # self.channel_edit.clear()
+        # for channel in channels:
+        #     self.channel_edit.addItem(channel['title'], channel['id'])
 
-        if channels:
-            self.selected_channel = channels[0]  # Default to first
-            self.channel_combo.setCurrentIndex(0)
-        else:
-            self.selected_channel = None
+        # if channels:
+        #     self.selected_channel = channels[0]  # Default to first
+        #     self.channel_edit.setCurrentIndex(0)
+        # else:
+        #     self.selected_channel = None
 
-        self.channel_combo.currentIndexChanged.connect(self.on_channel_selected)
+        # self.channel_edit.currentIndexChanged.connect(self.on_channel_selected)
     
     def on_channel_selected(self, index):
         if index >= 0:
             self.selected_channel = {
-                'title': self.channel_combo.currentText(),
-                'id': self.channel_combo.itemData(index)
+                'title': self.channel_edit.currentText(),
+                'id': self.channel_edit.itemData(index)
             }
         
     def load_credential_info(self):
@@ -949,7 +946,7 @@ class VideoGeneratorApp(QMainWindow):
         masked_middle = '*' * max(middle_length, 0)
 
         masked_client_id = prefix + masked_middle + suffix
-        self.google_client_id_edit.setText(masked_client_id)
+        self.account_name_edit.setText(masked_client_id)
         
         # List channels
         
@@ -961,7 +958,7 @@ class VideoGeneratorApp(QMainWindow):
             youtube = build('youtube', 'v3', credentials=self.credentials)
 
             self.channels = []
-            self.channel_combo.clear()
+            self.channel_edit.clear()
             
             response = youtube.channels().list(
                 part="snippet",
@@ -972,10 +969,10 @@ class VideoGeneratorApp(QMainWindow):
                 channel_id = channel["id"]
                 channel_title = channel["snippet"]["title"]
                 self.channels.append({"id": channel_id, "title": channel_title})
-                self.channel_combo.addItem(channel_title)
+                self.channel_edit.addItem(channel_title)
             
             if self.channels:
-                self.channel_combo.setEnabled(True)
+                self.channel_edit.setEnabled(True)
                 # self.on_channel_selected(0)
             else:
                 self.logger.info("No channels found for this account.")
