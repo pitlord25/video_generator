@@ -1,4 +1,4 @@
-import os, time
+import os, time, datetime
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from googleapiclient.discovery import build
@@ -15,9 +15,17 @@ class UploadThread(QThread):
     finished_signal = pyqtSignal(str, str)  # url, video_id
     error_signal = pyqtSignal(str)
     
-    def __init__(self, credentials, video_path, title, description, 
-                 category, tags, privacy_status, thumbnail_path=None, 
-                 publish_at=None, made_for_kids=False):
+    def __init__(self, 
+                 credentials, 
+                 video_path, 
+                 title, 
+                 description, 
+                 category, 
+                 tags, 
+                 privacy_status, 
+                 thumbnail_path=None, 
+                 publish_at: datetime=None, 
+                 made_for_kids=False):
         super().__init__()
         
         self.credentials = credentials
