@@ -17,7 +17,7 @@ class UploadThread(QThread):
     
     def __init__(self, credentials, video_path, title, description, 
                  category, tags, privacy_status, thumbnail_path=None, 
-                 publish_at=None, made_for_kids=False, channel_id=None):
+                 publish_at=None, made_for_kids=False):
         super().__init__()
         
         self.credentials = credentials
@@ -30,7 +30,6 @@ class UploadThread(QThread):
         self.thumbnail_path = thumbnail_path
         self.publish_at = publish_at
         self.made_for_kids = made_for_kids
-        self.channel_id = channel_id
         
         # Required for tracking upload progress
         self.progress = 0
@@ -64,10 +63,6 @@ class UploadThread(QThread):
             # Add scheduled publishing if specified
             if self.publish_at and self.privacy_status == 'public':
                 body['status']['publishAt'] = self.publish_at.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                
-            # Add channel ID if specified
-            if self.channel_id:
-                body['snippet']['channelId'] = self.channel_id
                 
             # Set up the media file upload
             media = MediaFileUpload(

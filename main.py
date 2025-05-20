@@ -793,7 +793,7 @@ class VideoGeneratorApp(QMainWindow):
         self.upload_thread = UploadThread(
             self.credentials, video_path, title, "", 
             category, "", privacy_status, thumbnail_path, 
-            publish_at, made_for_kids, channel_id
+            publish_at, made_for_kids
         )
         
         # Connect signals
@@ -861,11 +861,9 @@ class VideoGeneratorApp(QMainWindow):
             # Account selected and dialog accepted
             self.logger.info(f"Selected account: {self.account_manager.current_account}")
 
-    def on_account_changed(self, account_name, credentials, channel_info):
+    def on_account_changed(self, account_name, credentials):
         self.credentials = credentials  # Save current account's credentials
         self.account_name_edit.setText(account_name)
-        self.channel_edit.setText(channel_info['title'])
-        self.selected_channel = channel_info['id']
     
     def on_channel_selected(self, index):
         if index >= 0:
