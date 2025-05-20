@@ -5,7 +5,6 @@ os.chdir(current_directory)
 
 import json
 import log
-import pytz
 from utils import get_default_settings
 from worker import GenerationWorker
 from PyQt5.QtGui import QFont, QPalette, QColor
@@ -213,7 +212,7 @@ class VideoGeneratorApp(QMainWindow):
         # Add panels to splitter
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setSizes([400, 800])  # Initial sizes
+        splitter.setSizes([800, 400])  # Initial sizes
 
         # Set up log handler to display logs in the log window
         log_handler = log.LogHandler(self.update_log)
@@ -307,7 +306,7 @@ class VideoGeneratorApp(QMainWindow):
         prompts_tab = QScrollArea()
         prompts_tab.setWidgetResizable(True)
         prompts_content = QWidget()
-        prompts_layout = QVBoxLayout(prompts_content)
+        prompts_layout = QGridLayout(prompts_content)
 
         # Thumbnail Prompt Group
         thumbnail_group = self.create_group_box("Thumbnail Prompt")
@@ -323,7 +322,7 @@ class VideoGeneratorApp(QMainWindow):
         thumbnail_layout.addWidget(thumbnail_label)
         thumbnail_layout.addWidget(self.thumbnail_prompt_input)
         thumbnail_group.setLayout(thumbnail_layout)
-        prompts_layout.addWidget(thumbnail_group)
+        prompts_layout.addWidget(thumbnail_group, 0, 0)
 
         # Images Prompt Group
         images_group = self.create_group_box("Images Prompt")
@@ -338,7 +337,22 @@ class VideoGeneratorApp(QMainWindow):
         images_layout.addWidget(images_label)
         images_layout.addWidget(self.images_prompt_input)
         images_group.setLayout(images_layout)
-        prompts_layout.addWidget(images_group)
+        prompts_layout.addWidget(images_group, 1, 0)
+        
+        # Disclamier Text Group
+        disclaimer_group = self.create_group_box("Disclaimer Text")
+        disclaimer_layout = QVBoxLayout()
+        
+        disclaimer_label = QLabel("Enter text for disclaimer in the description:")
+        self.disclaimer_input = QTextEdit()
+        self.disclaimer_input.setPlaceholderText(
+            "DISCLAIMER: ...")
+        self.disclaimer_input.setMinimumHeight(80)
+        
+        disclaimer_layout.addWidget(disclaimer_label)
+        disclaimer_layout.addWidget(self.disclaimer_input)
+        disclaimer_group.setLayout(disclaimer_layout)
+        prompts_layout.addWidget(disclaimer_group, 2,0)
 
         # Script Prompts Group
         script_group = self.create_group_box("Script Prompts")
@@ -373,7 +387,7 @@ class VideoGeneratorApp(QMainWindow):
         script_layout.addWidget(self.outro_prompt_input)
 
         script_group.setLayout(script_layout)
-        prompts_layout.addWidget(script_group)
+        prompts_layout.addWidget(script_group, 0, 1, 3, 1)
 
         # Set content widget for scroll area
         prompts_tab.setWidget(prompts_content)
@@ -599,6 +613,7 @@ class VideoGeneratorApp(QMainWindow):
                 "video_title": self.video_title_input.text(),
                 "thumbnail_prompt": self.thumbnail_prompt_input.toPlainText(),
                 "images_prompt": self.images_prompt_input.toPlainText(),
+                "disclaimer": self.disclaimer_input.toPlainText(),
                 "intro_prompt": self.intro_prompt_input.toPlainText(),
                 "looping_prompt": self.looping_prompt_input.toPlainText(),
                 "outro_prompt": self.outro_prompt_input.toPlainText(),
@@ -644,6 +659,9 @@ class VideoGeneratorApp(QMainWindow):
                 settings.get("thumbnail_prompt", ""))
             self.images_prompt_input.setPlainText(
                 settings.get("images_prompt", ""))
+            self.disclaimer_input.setPlainText(
+                settings.get("disclaimer", "")
+            )
             self.intro_prompt_input.setPlainText(
                 settings.get("intro_prompt", ""))
             self.looping_prompt_input.setPlainText(

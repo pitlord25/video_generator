@@ -166,6 +166,7 @@ def get_default_settings() -> Dict[str, Any]:
         "video_title": "",
         "thumbnail_prompt": "",
         "images_prompt": "",
+        "disclaimer": "",
         "intro_prompt": "",
         "looping_prompt": "",
         "outro_prompt": "",
