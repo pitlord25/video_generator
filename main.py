@@ -922,7 +922,7 @@ class VideoGeneratorApp(QMainWindow):
             
             response = youtube.channels().list(
                 part="snippet",
-                # mine=True
+                mine=True
             ).execute()
             
             for channel in response.get("items", []):
