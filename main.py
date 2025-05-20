@@ -772,7 +772,7 @@ class VideoGeneratorApp(QMainWindow):
         made_for_kids = False
         publish_at = None
         if self.schedule_checkbox.isChecked():
-            publish_at = self.schedule_datetime.dateTime().toPyDateTime().replace(tzinfo=pytz.UTC)
+            publish_at = self.schedule_datetime.dateTime().toPyDateTime()
         
         self.youtube_upload_progress_bar.setValue(0)
         self.youtube_status_label.setText("Status: Preparing upload...")
