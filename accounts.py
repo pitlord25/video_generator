@@ -303,7 +303,10 @@ class AccountManagerDialog(QDialog):
     
     account_changed = pyqtSignal(str, object, str)  # Signal when account is changed (name, credentials, channel)
     
-    def __init__(self, account_manager, parent=None):
+    def __init__(
+        self, 
+        account_manager : AccountManager, 
+        parent=None):
         super().__init__(parent)
         self.account_manager = account_manager
         self.setup_ui()
@@ -487,8 +490,9 @@ class AccountManagerDialog(QDialog):
         """Accept dialog and emit signal with selected account"""
         if self.account_manager.current_account:
             credentials = self.account_manager.get_current_credentials()
+            channel_title = self.account_manager.accounts[self.account_manager.current_account].get('Channel Info', 'Unknown Channel')
             if credentials:
-                self.account_changed.emit(self.account_manager.current_account, credentials, self.account_manager.current_account.get('Channel Info', 'Unknown Channel'))
+                self.account_changed.emit(self.account_manager.current_account, credentials, channel_title)
                 super().accept()
             else:
                 QMessageBox.critical(self, "Error", "Could not get account credentials")
