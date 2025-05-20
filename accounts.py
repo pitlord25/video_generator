@@ -4,13 +4,12 @@ import json
 import base64
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QListWidget, QInputDialog, QMessageBox, QLineEdit,
-                            QComboBox, QGroupBox, QFrame, QSplitter)
+                            QGroupBox)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QIcon
 import google_auth_oauthlib.flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 # Constants
 SCOPES = [
@@ -24,7 +23,7 @@ API_SERVICE_NAME = 'youtube'
 API_VERSION = 'v3'
 
 class AccountManager:
-    """Class to manage multiple Google accounts"""
+    """Class to manage multiple Google accounts, each representing a YouTube channel"""
     
     def __init__(self, accounts_file, client_secrets_file=None, logger=None):
         self.accounts_file = accounts_file
@@ -102,7 +101,7 @@ class AccountManager:
         self.log(f"Set client secrets file: {path}")
     
     def add_account(self, name, credentials=None):
-        """Add a new account"""
+        """Add a new account (representing a YouTube channel)"""
         if name in self.accounts:
             self.log(f"Account {name} already exists", "warning")
             return False
@@ -126,23 +125,24 @@ class AccountManager:
                     self.log("Failed to get channel info for new account", "error")
                     return False
                 
-                # Get the first channel as the default identifier
-                channel_name = response['items'][0]['snippet']['title']
+                # Get channel information
+                channel_id = response['items'][0]['id']
+                channel_title = response['items'][0]['snippet']['title']
                 
                 # Serialize credentials to bytes
                 credentials_bytes = pickle.dumps(credentials)
                 
-                # Store account
+                # Store account with channel info directly
                 self.accounts[name] = {
                     'credentials': credentials_bytes,
                     'display_name': name,
-                    'default_channel': channel_name,
-                    'channels': self._get_channels(credentials)
+                    'channel_id': channel_id,
+                    'channel_title': channel_title
                 }
                 
                 self.current_account = name
                 self.save_accounts()
-                self.log(f"Added new account: {name}")
+                self.log(f"Added new account: {name} for channel: {channel_title}")
                 return True
                 
             except Exception as e:
@@ -150,14 +150,31 @@ class AccountManager:
                 return False
         else:
             # Add with provided credentials
-            credentials_bytes = pickle.dumps(credentials)
-            self.accounts[name] = {
-                'credentials': credentials_bytes,
-                'display_name': name,
-                'channels': self._get_channels(credentials)
-            }
-            self.save_accounts()
-            return True
+            try:
+                credentials_bytes = pickle.dumps(credentials)
+                
+                # Try to get channel info
+                youtube = build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
+                response = youtube.channels().list(part="snippet", mine=True).execute()
+                
+                if response.get('items'):
+                    channel_id = response['items'][0]['id']
+                    channel_title = response['items'][0]['snippet']['title']
+                else:
+                    channel_id = "unknown"
+                    channel_title = "Unknown Channel"
+                
+                self.accounts[name] = {
+                    'credentials': credentials_bytes,
+                    'display_name': name,
+                    'channel_id': channel_id,
+                    'channel_title': channel_title
+                }
+                self.save_accounts()
+                return True
+            except Exception as e:
+                self.log(f"Error adding account with provided credentials: {str(e)}", "error")
+                return False
     
     def rename_account(self, old_name, new_name):
         """Rename an account"""
@@ -202,7 +219,6 @@ class AccountManager:
             return False
         
         self.current_account = name
-        # self.save_accounts()
         self.log(f"Selected account: {name}")
         return True
     
@@ -223,7 +239,7 @@ class AccountManager:
                 credentials.refresh(Request())
                 # Update stored credentials
                 self.accounts[account_name]['credentials'] = pickle.dumps(credentials)
-                # self.save_accounts()
+                self.save_accounts()
                 self.log(f"Refreshed credentials for {account_name}")
             
             return credentials
@@ -239,110 +255,53 @@ class AccountManager:
         """Get list of account names"""
         return list(self.accounts.keys())
     
-    def get_account_channels(self, name=None):
-        """Get channels for an account"""
+    def get_current_channel_info(self):
+        """Get channel info for current account"""
+        if not self.current_account or self.current_account not in self.accounts:
+            return None
+        
+        account_info = self.accounts[self.current_account]
+        return {
+            'id': account_info.get('channel_id', 'unknown'),
+            'title': account_info.get('channel_title', 'Unknown Channel')
+        }
+    
+    def refresh_channel_info(self, name=None):
+        """Refresh channel info for an account"""
         account_name = name if name else self.current_account
         
         if not account_name or account_name not in self.accounts:
-            return []
+            return False
         
         credentials = self.get_account_credentials(account_name)
         if not credentials:
-            return []
+            return False
         
-        # Refresh channels list
-        channels = self._get_channels(credentials)
-        
-        # Update stored channels
-        if channels:
-            self.accounts[account_name]['channels'] = channels
-            self.save_accounts()
-            
-        return channels
-    
-    def _get_channels(self, credentials):
-        """Get channels for credentials"""
         try:
             youtube = build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
-            channels = []
+            response = youtube.channels().list(part="snippet", mine=True).execute()
             
-            # First get the channels where the user is the owner (primary channel)
-            try:
-                primary_response = youtube.channels().list(
-                    part="snippet,contentDetails",
-                    mine=True
-                ).execute()
+            if response.get('items'):
+                channel_id = response['items'][0]['id']
+                channel_title = response['items'][0]['snippet']['title']
                 
-                for channel in primary_response.get("items", []):
-                    channels.append({
-                        "id": channel["id"],
-                        "title": channel["snippet"]["title"],
-                        "is_primary": True
-                    })
-                    self.log(f"Found primary channel: {channel['snippet']['title']}")
-            except Exception as e:
-                self.log(f"Error getting primary channel: {str(e)}", "error")
-            
-            # Now, get all brand accounts (additional channels)
-            # We need to use the YouTube Partner API for this
-            youtube_partner = build(
-                'youtubePartner', 'v1', 
-                credentials=credentials,
-                discoveryServiceUrl='https://www.googleapis.com/discovery/v1/apis/youtubePartner/v1/rest'
-            )
-            
-            try:
-                # Get all brand accounts that the user has access to
-                brand_accounts_request = youtube_partner.channels().list()
-                brand_accounts_response = brand_accounts_request.execute()
-                
-                # Alternative approach using YouTube API v3 directly
-                if not brand_accounts_response.get('items'):
-                    # Use Channel Section API to get linked channels
-                    sections_request = youtube.channelSections().list(
-                        part="snippet,contentDetails",
-                        mine=True
-                    )
-                    sections_response = sections_request.execute()
-                    
-                    # Extract channel IDs from sections
-                    for section in sections_response.get('items', []):
-                        if section.get('snippet', {}).get('type') == 'multiplechannels':
-                            channel_ids = section.get('contentDetails', {}).get('channels', [])
-                            if channel_ids:
-                                channels_request = youtube.channels().list(
-                                    part="snippet",
-                                    id=','.join(channel_ids)
-                                )
-                                channels_response = channels_request.execute()
-                                print(channels_response)
-                else:
-                    print(channels_response)
-
-            except HttpError as e:
-                print(f"Error accessing YouTube Partner API: {e}")
-                
-                # Alternative approach - use Channel list endpoint with managedByMe=true
-                try:
-                    managed_channels_request = youtube.channels().list(
-                        part="snippet",
-                        managedByMe=True
-                    )
-                    managed_channels_response = managed_channels_request.execute()
-                    # all_channels.extend(managed_channels_response.get('items', []))
-                except HttpError as e2:
-                    print(f"Error accessing managed channels: {e2}")
-            
-            return channels
+                self.accounts[account_name]['channel_id'] = channel_id
+                self.accounts[account_name]['channel_title'] = channel_title
+                self.save_accounts()
+                self.log(f"Updated channel info for {account_name}: {channel_title}")
+                return True
+            else:
+                self.log(f"No channel found for account {account_name}", "warning")
+                return False
         except Exception as e:
-            self.log(f"Error getting channels: {str(e)}", "error")
-            return []
+            self.log(f"Error refreshing channel info: {str(e)}", "error")
+            return False
 
 
 class AccountManagerDialog(QDialog):
     """Dialog for managing Google accounts"""
     
-    account_changed = pyqtSignal(str, object, object)  # Signal when account is changed (name, credentials)
+    account_changed = pyqtSignal(str, object)  # Signal when account is changed (name, credentials, channel)
     
     def __init__(self, account_manager, parent=None):
         super().__init__(parent)
@@ -350,19 +309,18 @@ class AccountManagerDialog(QDialog):
         self.setup_ui()
         
     def setup_ui(self):
-        self.setWindowTitle("Google Account Manager")
-        self.setMinimumSize(600, 400)
+        self.setWindowTitle("YouTube Account Manager")
+        self.setMinimumSize(600, 300)  # Reduced height since we removed the channel section
         
         main_layout = QVBoxLayout(self)
                 
         # Account list
-        accounts_group = QGroupBox("Accounts")
+        accounts_group = QGroupBox("YouTube Accounts")
         accounts_layout = QVBoxLayout()
         
         self.account_list = QListWidget()
-        
         accounts_layout.addWidget(self.account_list)
-        
+                
         # Account buttons
         account_buttons_layout = QHBoxLayout()
         
@@ -378,32 +336,18 @@ class AccountManagerDialog(QDialog):
         self.remove_account_btn.clicked.connect(self.remove_account)
         self.remove_account_btn.setEnabled(False)
         
+        self.refresh_btn = QPushButton("Refresh Info")
+        self.refresh_btn.clicked.connect(self.refresh_channel_info)
+        self.refresh_btn.setEnabled(False)
+        
         account_buttons_layout.addWidget(self.add_account_btn)
         account_buttons_layout.addWidget(self.rename_account_btn)
         account_buttons_layout.addWidget(self.remove_account_btn)
+        account_buttons_layout.addWidget(self.refresh_btn)
         
         accounts_layout.addLayout(account_buttons_layout)
         accounts_group.setLayout(accounts_layout)
         main_layout.addWidget(accounts_group)
-        
-        # Channel selection section
-        channel_group = QGroupBox("YouTube Channels")
-        channel_layout = QVBoxLayout()
-        
-        self.channel_select_label = QLabel("Selected Account Channels:")
-        channel_layout.addWidget(self.channel_select_label)
-        
-        self.channel_combo = QComboBox()
-        self.channel_combo.setEnabled(False)
-        channel_layout.addWidget(self.channel_combo)
-        
-        self.refresh_channels_btn = QPushButton("Refresh Channels")
-        self.refresh_channels_btn.clicked.connect(self.refresh_channels)
-        self.refresh_channels_btn.setEnabled(False)
-        channel_layout.addWidget(self.refresh_channels_btn)
-        
-        channel_group.setLayout(channel_layout)
-        main_layout.addWidget(channel_group)
         
         # Dialog buttons
         button_layout = QHBoxLayout()
@@ -429,13 +373,19 @@ class AccountManagerDialog(QDialog):
         self.account_list.clear()
         
         for name in self.account_manager.get_accounts_list():
-            self.account_list.addItem(name)
+            account_info = self.account_manager.accounts[name]
+            channel_title = account_info.get('channel_title', 'Unknown Channel')
+            display_text = f"{name} ({channel_title})"
+            
+            item = QListWidget.QListWidgetItem(display_text)
+            item.setData(Qt.UserRole, name)  # Store actual account name
+            self.account_list.addItem(item)
             
             # Select current account if there is one
             if name == self.account_manager.current_account:
                 self.account_list.setCurrentRow(self.account_list.count() - 1)
         
-        # Update channel combo if current account exists
+        # Update channel info if current account exists
         if self.account_manager.current_account:
             self.on_account_selected(self.account_list.currentItem())
     
@@ -445,40 +395,35 @@ class AccountManagerDialog(QDialog):
             self.rename_account_btn.setEnabled(False)
             self.remove_account_btn.setEnabled(False)
             self.select_btn.setEnabled(False)
-            self.refresh_channels_btn.setEnabled(False)
-            self.channel_combo.setEnabled(False)
+            self.refresh_btn.setEnabled(False)
+            self.channel_info_label.setText("No account selected")
             return
         
-        account_name = item.text()
+        account_name = item.data(Qt.UserRole)  # Get actual account name
         self.account_manager.select_account(account_name)
+        
+        # Update channel info label
+        account_info = self.account_manager.accounts[account_name]
+        channel_title = account_info.get('channel_title', 'Unknown Channel')
+        channel_id = account_info.get('channel_id', 'Unknown ID')
+        self.channel_info_label.setText(f"Channel: {channel_title} (ID: {channel_id})")
         
         self.rename_account_btn.setEnabled(True)
         self.remove_account_btn.setEnabled(True)
         self.select_btn.setEnabled(True)
-        self.refresh_channels_btn.setEnabled(True)
-        
-        # Populate channel combo
-        self.refresh_channels()
+        self.refresh_btn.setEnabled(True)
     
-    def refresh_channels(self):
-        """Refresh channels for the selected account"""
+    def refresh_channel_info(self):
+        """Refresh channel info for the selected account"""
         if not self.account_manager.current_account:
             return
             
-        self.channel_combo.clear()
-        channels = self.account_manager.get_account_channels()
-        
-        if channels:
-            for channel in channels:
-                # Mark primary channels with an asterisk
-                title = channel['title']
-                if channel.get('is_primary', False):
-                    title = f"{title} *"
-                self.channel_combo.addItem(title, channel['id'])
-            
-            self.channel_combo.setEnabled(True)
+        if self.account_manager.refresh_channel_info():
+            # Update the account list to show updated channel info
+            self.refresh_account_list()
+            QMessageBox.information(self, "Success", "Channel information updated successfully")
         else:
-            self.channel_combo.setEnabled(False)
+            QMessageBox.warning(self, "Warning", "Failed to update channel information")
     
     def add_account(self):
         """Add a new Google account"""
@@ -498,7 +443,12 @@ class AccountManagerDialog(QDialog):
             
             if self.account_manager.add_account(name):
                 self.refresh_account_list()
-                QMessageBox.information(self, "Success", f"Account '{name}' was added successfully")
+                # Get channel info from the newly added account
+                channel_info = self.account_manager.accounts[name]
+                channel_title = channel_info.get('channel_title', 'Unknown Channel')
+                QMessageBox.information(self, "Success", 
+                                      f"Account '{name}' was added successfully\n"
+                                      f"Channel: {channel_title}")
             else:
                 QMessageBox.critical(self, "Error", f"Failed to add account '{name}'")
     
@@ -507,7 +457,7 @@ class AccountManagerDialog(QDialog):
         if not self.account_list.currentItem():
             return
             
-        old_name = self.account_list.currentItem().text()
+        old_name = self.account_list.currentItem().data(Qt.UserRole)
         new_name, ok = QInputDialog.getText(
             self, "Rename Account", 
             "Enter new account name:", 
@@ -525,7 +475,7 @@ class AccountManagerDialog(QDialog):
         if not self.account_list.currentItem():
             return
             
-        account_name = self.account_list.currentItem().text()
+        account_name = self.account_list.currentItem().data(Qt.UserRole)
         
         reply = QMessageBox.question(
             self, "Confirm Removal",
@@ -540,22 +490,12 @@ class AccountManagerDialog(QDialog):
             else:
                 QMessageBox.critical(self, "Error", f"Failed to remove account '{account_name}'")
     
-    def get_selected_channel(self):
-        """Get the selected channel ID"""
-        if self.channel_combo.currentIndex() >= 0:
-            return {
-                'id': self.channel_combo.currentData(),
-                'title': self.channel_combo.currentText().replace(" *", "")  # Remove primary indicator
-            }
-        return None
-    
     def accept(self):
         """Accept dialog and emit signal with selected account"""
         if self.account_manager.current_account:
             credentials = self.account_manager.get_current_credentials()
-            channel = self.get_selected_channel()
             if credentials:
-                self.account_changed.emit(self.account_manager.current_account, credentials, channel)
+                self.account_changed.emit(self.account_manager.current_account, credentials)
                 super().accept()
             else:
                 QMessageBox.critical(self, "Error", "Could not get account credentials")
