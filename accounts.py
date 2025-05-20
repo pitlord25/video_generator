@@ -300,7 +300,6 @@ class AccountManagerDialog(QDialog):
         accounts_layout = QVBoxLayout()
         
         self.account_list = QListWidget()
-        self.refresh_account_list()
         
         accounts_layout.addWidget(self.account_list)
         
@@ -362,6 +361,7 @@ class AccountManagerDialog(QDialog):
         
         main_layout.addLayout(button_layout)
 
+        self.refresh_account_list()
         self.account_list.itemClicked.connect(self.on_account_selected)
             
     def refresh_account_list(self):
