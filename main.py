@@ -803,8 +803,6 @@ class VideoGeneratorApp(QMainWindow):
         # Start the thread
         self.upload_thread.start()
         
-        print(self.video_title)
-        
     def update_youtube_upload_progress(self, progress):
         self.youtube_upload_progress_bar.setValue(progress)
     
