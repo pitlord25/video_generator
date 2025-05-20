@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QCheckBox, QDateTimeEdit, QComboBox)
 
 from uploader import UploadThread
+from googleapiclient.discovery import build
 
 
 # If modifying these scopes, delete your previously saved credentials
@@ -914,10 +915,12 @@ class VideoGeneratorApp(QMainWindow):
                 self.logger.error("Not authenticated. Please authenticate first.")
                 return
                 
+            youtube = build('youtube', 'v3', credentials=self.credentials)
+
             self.channels = []
             self.channel_combo.clear()
             
-            response = self.credentials.channels().list(
+            response = youtube.channels().list(
                 part="snippet",
                 mine=True
             ).execute()
