@@ -396,17 +396,10 @@ class AccountManagerDialog(QDialog):
             self.remove_account_btn.setEnabled(False)
             self.select_btn.setEnabled(False)
             self.refresh_btn.setEnabled(False)
-            self.channel_info_label.setText("No account selected")
             return
         
         account_name = item.data(Qt.UserRole)  # Get actual account name
         self.account_manager.select_account(account_name)
-        
-        # Update channel info label
-        account_info = self.account_manager.accounts[account_name]
-        channel_title = account_info.get('channel_title', 'Unknown Channel')
-        channel_id = account_info.get('channel_id', 'Unknown ID')
-        self.channel_info_label.setText(f"Channel: {channel_title} (ID: {channel_id})")
         
         self.rename_account_btn.setEnabled(True)
         self.remove_account_btn.setEnabled(True)
