@@ -13,11 +13,11 @@ from googleapiclient.discovery import build
 
 # Constants
 SCOPES = [
-    'https://www.googleapis.com/auth/youtube.upload',
-    'https://www.googleapis.com/auth/youtube.readonly',
-    'https://www.googleapis.com/auth/youtubepartner-channel-audit',
     'https://www.googleapis.com/auth/youtube',
-    'https://www.googleapis.com/auth/youtube.force-ssl'  # More comprehensive access
+    'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/youtube.force-ssl',
+    'https://www.googleapis.com/auth/youtubepartner',
+    'https://www.googleapis.com/auth/youtubepartner-channel-audit',
 ]
 API_SERVICE_NAME = 'youtube'
 API_VERSION = 'v3'
