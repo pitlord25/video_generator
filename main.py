@@ -3,15 +3,13 @@ import sys
 current_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
 os.chdir(current_directory)
 
-import pickle
 import json
 import log
-import google_auth_oauthlib.flow
-from google.auth.transport.requests import Request
-from utils import get_default_settings, get_settings_filepath
+import pytz
+from utils import get_default_settings
 from worker import GenerationWorker
 from PyQt5.QtGui import QFont, QPalette, QColor
-from PyQt5.QtCore import Qt, QSize, QDateTime
+from PyQt5.QtCore import Qt, QDateTime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QFileDialog,
                              QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy,
@@ -774,7 +772,7 @@ class VideoGeneratorApp(QMainWindow):
         made_for_kids = False
         publish_at = None
         if self.schedule_checkbox.isChecked():
-            publish_at = self.schedule_datetime.dateTime().toPyDateTime()
+            publish_at = self.schedule_datetime.dateTime().toPyDateTime().replace(tzinfo=pytz.UTC)
         
         self.youtube_upload_progress_bar.setValue(0)
         self.youtube_status_label.setText("Status: Preparing upload...")

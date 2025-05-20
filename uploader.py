@@ -70,7 +70,7 @@ class UploadThread(QThread):
             
             # Add scheduled publishing if specified
             if self.publish_at and self.privacy_status == 'public':
-                body['status']['publishAt'] = self.publish_at.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+                body['status']['publishAt'] = self.publish_at.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
                 
             # Set up the media file upload
             media = MediaFileUpload(
