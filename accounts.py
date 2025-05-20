@@ -488,7 +488,7 @@ class AccountManagerDialog(QDialog):
         if self.account_manager.current_account:
             credentials = self.account_manager.get_current_credentials()
             if credentials:
-                self.account_changed.emit(self.account_manager.current_account, credentials, self.account_manager.get('Channel Info', 'Unknown Channel'))
+                self.account_changed.emit(self.account_manager.current_account, credentials, self.account_manager.current_account.get('Channel Info', 'Unknown Channel'))
                 super().accept()
             else:
                 QMessageBox.critical(self, "Error", "Could not get account credentials")
