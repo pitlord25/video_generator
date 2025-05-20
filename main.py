@@ -785,13 +785,15 @@ class VideoGeneratorApp(QMainWindow):
         if self.schedule_checkbox.isChecked():
             publish_at = self.schedule_datetime.dateTime().toPyDateTime()
             
+        channel_id = self.selected_channel
+        
         self.youtube_upload_progress_bar.setValue(0)
         self.youtube_status_label.setText("Status: Preparing upload...")
         
         self.upload_thread = UploadThread(
             self.credentials, video_path, title, "", 
             category, "", privacy_status, thumbnail_path, 
-            publish_at, made_for_kids
+            publish_at, made_for_kids, channel_id
         )
         
         # Connect signals
