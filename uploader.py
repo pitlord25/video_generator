@@ -126,7 +126,7 @@ class UploadThread(QThread):
                 
             self.status_signal.emit(status_msg)
             self.finished_signal.emit(video_url, video_id)
-            return video_id
+            return ""
         
         except HttpError as e:
             error_content = e.content.decode('utf-8') if hasattr(e, 'content') else str(e)
