@@ -198,7 +198,7 @@ class AccountManager:
             return False
         
         self.current_account = name
-        self.save_accounts()
+        # self.save_accounts()
         self.log(f"Selected account: {name}")
         return True
     
@@ -219,7 +219,7 @@ class AccountManager:
                 credentials.refresh(Request())
                 # Update stored credentials
                 self.accounts[account_name]['credentials'] = pickle.dumps(credentials)
-                self.save_accounts()
+                # self.save_accounts()
                 self.log(f"Refreshed credentials for {account_name}")
             
             return credentials
