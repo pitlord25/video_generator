@@ -41,7 +41,7 @@ class UploadThread(QThread):
         try:
             if not os.path.exists(self.video_path):
                 self.error_signal.emit(f"Video file not found: {self.video_path}")
-                return ""  # Return empty string instead of None
+                return
                 
             # Build the YouTube service
             youtube = build('youtube', 'v3', credentials=self.credentials)
@@ -96,7 +96,7 @@ class UploadThread(QThread):
                         
             if not self.running:
                 self.error_signal.emit("Upload cancelled")
-                return ""  # Return empty string instead of None
+                return
                 
             # Get the video ID
             video_id = response['id']
@@ -126,7 +126,6 @@ class UploadThread(QThread):
                 
             self.status_signal.emit(status_msg)
             self.finished_signal.emit(video_url, video_id)
-            return ""
         
         except HttpError as e:
             error_content = e.content.decode('utf-8') if hasattr(e, 'content') else str(e)
@@ -140,12 +139,9 @@ class UploadThread(QThread):
             # Check specifically for permission issues
             if e.resp.status == 403:
                 self.status_signal.emit("Permission denied. Make sure your account has access to this channel.")
-                
-            return ""  # Return empty string instead of None
             
         except Exception as e:
             self.error_signal.emit(f"Error: {str(e)}")
-            return ""  # Return empty string instead of None
             
     def cancel(self):
         """Cancel the upload"""

@@ -770,7 +770,7 @@ class VideoGeneratorApp(QMainWindow):
         thumbnail_path = os.path.join(self.video_title, "thumbnail.jpg")
         title = self.video_title_input.text()
         category = self.category_id_edit.text()
-        privacy_status = "Public"
+        privacy_status = "public"
         made_for_kids = False
         publish_at = None
         if self.schedule_checkbox.isChecked():
@@ -780,9 +780,16 @@ class VideoGeneratorApp(QMainWindow):
         self.youtube_status_label.setText("Status: Preparing upload...")
         
         self.upload_thread = UploadThread(
-            self.credentials, video_path, title, "", 
-            category, "", privacy_status, thumbnail_path, 
-            publish_at, made_for_kids
+            credentials=self.credentials, 
+            video_path=video_path, 
+            title=title, 
+            description="", 
+            category=category, 
+            tags="", 
+            privacy_status=privacy_status, 
+            thumbnail_path=thumbnail_path, 
+            publish_at=publish_at, 
+            made_for_kids=made_for_kids
         )
         
         # Connect signals
