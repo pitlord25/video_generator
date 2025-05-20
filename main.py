@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QFileDialog,
                              QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy,
                              QMessageBox, QTabWidget, QFrame, QScrollArea, QStyle, QStyleFactory,
-                             QCheckBox, QDateTimeEdit)
+                             QCheckBox, QDateTimeEdit, QComboBox)
 
 from uploader import UploadThread
 
@@ -493,6 +493,10 @@ class VideoGeneratorApp(QMainWindow):
         self.google_client_id_edit.setReadOnly(True)
         self.google_client_id_edit.setPlaceholderText("No credentials loaded")
         self.google_client_id_edit.setStyleSheet("padding: 8px;")
+        
+        channel_combo_label = QLabel("Channel:")
+        self.channel_combo = QComboBox()
+        self.channel_combo.setStyleSheet("padding: 8px;")
 
         category_id_label = QLabel("Category ID:")
         self.category_id_edit = QLineEdit()
@@ -512,10 +516,12 @@ class VideoGeneratorApp(QMainWindow):
 
         credential_detail_layout.addWidget(client_id_label, 0, 0)
         credential_detail_layout.addWidget(self.google_client_id_edit, 0, 1)
-        credential_detail_layout.addWidget(category_id_label, 1, 0)
-        credential_detail_layout.addWidget(self.category_id_edit, 1, 1)
-        credential_detail_layout.addWidget(self.schedule_checkbox, 2, 0)
-        credential_detail_layout.addWidget(self.schedule_datetime, 2, 1)
+        credential_detail_layout.addWidget(channel_combo_label, 1, 0)
+        credential_detail_layout.addWidget(self.channel_combo, 1, 1)
+        credential_detail_layout.addWidget(category_id_label, 2, 0)
+        credential_detail_layout.addWidget(self.category_id_edit, 2, 1)
+        credential_detail_layout.addWidget(self.schedule_checkbox, 3, 0)
+        credential_detail_layout.addWidget(self.schedule_datetime, 3, 1)
 
         credential_control_layout = QHBoxLayout()
 
@@ -900,6 +906,36 @@ class VideoGeneratorApp(QMainWindow):
 
         masked_client_id = prefix + masked_middle + suffix
         self.google_client_id_edit.setText(masked_client_id)
+        
+        # List channels
+        
+        try:
+            if not self.credentials:
+                self.logger.error("Not authenticated. Please authenticate first.")
+                return
+                
+            self.channels = []
+            self.channel_combo.clear()
+            
+            response = self.credentials.channels().list(
+                part="snippet",
+                mine=True
+            ).execute()
+            
+            for channel in response.get("items", []):
+                channel_id = channel["id"]
+                channel_title = channel["snippet"]["title"]
+                self.channels.append({"id": channel_id, "title": channel_title})
+                self.channel_combo.addItem(channel_title)
+            
+            if self.channels:
+                self.channel_combo.setEnabled(True)
+                # self.on_channel_selected(0)
+            else:
+                self.logger.info("No channels found for this account.")
+                
+        except Exception as e:
+            self.logger.error(f"Error listing channels: {str(e)}")
 
     def toggle_schedule(self, state):
         self.schedule_datetime.setEnabled(state == Qt.Checked)
