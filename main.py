@@ -852,79 +852,18 @@ class VideoGeneratorApp(QMainWindow):
             self.logger.info(f'Save settings to: {file_name}')
             self.save_settings(file_name)
 
-    def get_credentials(self):
-        if not self.client_secrets_file:
-            QMessageBox.warning(
-                self, 'Warning', 'Please load OAuth2 client secrets file first')
-            return
-
-        try:
-            flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
-                self.client_secrets_file, SCOPES)
-            self.credentials = flow.run_local_server(port=8080)
-
-            # Save the credentials for the next run
-            with open(self.google_token_path, 'wb') as token:
-                pickle.dump(self.credentials, token)
-
-            self.logger.info('Authentication successful')
-            self.load_credential_info()
-        except Exception as e:
-            QMessageBox.critical(
-                self, 'Error', f'Authentication failed: {str(e)}')
-
     def load_youtube_credential(self):
         dialog = AccountManagerDialog(self.account_manager, self)
         dialog.account_changed.connect(self.on_account_changed)
         if dialog.exec_():
             # Account selected and dialog accepted
             self.logger.info(f"Selected account: {self.account_manager.current_account}")
-        return
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, 'Load Google OAuth2 Client Secrets', '', 'JSON Files (*.json);;All Files (*)')
-
-        if file_path:
-            self.client_secrets_file = file_path
-            # Check if there are saved credentials
-
-            if os.path.exists(self.google_token_path):
-                with open(self.google_token_path, 'rb') as token:
-                    self.credentials = pickle.load(token)
-
-                # Check if credentials are valid or need refreshing
-                if self.credentials and self.credentials.expired and self.credentials.refresh_token:
-                    self.credentials.refresh(Request())
-                    with open(self.google_token_path, 'wb') as token:
-                        pickle.dump(self.credentials, token)
-
-                    self.logger.info('Credentials loaded and refreshed')
-                    self.load_credential_info()
-                else:
-                    self.logger.info('Credentials loaded successfully')
-                    self.load_credential_info()
-
-                return
-
-            # If no saved credentials, get new ones
-            self.get_credentials()
 
     def on_account_changed(self, account_name, credentials, channel_info):
         self.credentials = credentials  # Save current account's credentials
         self.account_name_edit.setText(account_name)
         self.channel_edit.setText(channel_info['title'])
-
-        # channels = self.account_manager.get_account_channels(account_name)
-        # self.channel_edit.clear()
-        # for channel in channels:
-        #     self.channel_edit.addItem(channel['title'], channel['id'])
-
-        # if channels:
-        #     self.selected_channel = channels[0]  # Default to first
-        #     self.channel_edit.setCurrentIndex(0)
-        # else:
-        #     self.selected_channel = None
-
-        # self.channel_edit.currentIndexChanged.connect(self.on_channel_selected)
+        self.selected_channel = channel_info['id']
     
     def on_channel_selected(self, index):
         if index >= 0:
@@ -933,53 +872,6 @@ class VideoGeneratorApp(QMainWindow):
                 'id': self.channel_edit.itemData(index)
             }
         
-    def load_credential_info(self):
-        if not self.credentials:
-            return
-
-        client_id = self.credentials.client_id
-        prefix = client_id[:10]
-        suffix = client_id[-25:] if len(client_id) > 25 else ""
-
-        # Calculate how many characters to mask in the middle
-        middle_length = len(client_id) - len(prefix) - len(suffix)
-        masked_middle = '*' * max(middle_length, 0)
-
-        masked_client_id = prefix + masked_middle + suffix
-        self.account_name_edit.setText(masked_client_id)
-        
-        # List channels
-        
-        try:
-            if not self.credentials:
-                self.logger.error("Not authenticated. Please authenticate first.")
-                return
-                
-            youtube = build('youtube', 'v3', credentials=self.credentials)
-
-            self.channels = []
-            self.channel_edit.clear()
-            
-            response = youtube.channels().list(
-                part="snippet",
-                mine=True
-            ).execute()
-            
-            for channel in response.get("items", []):
-                channel_id = channel["id"]
-                channel_title = channel["snippet"]["title"]
-                self.channels.append({"id": channel_id, "title": channel_title})
-                self.channel_edit.addItem(channel_title)
-            
-            if self.channels:
-                self.channel_edit.setEnabled(True)
-                # self.on_channel_selected(0)
-            else:
-                self.logger.info("No channels found for this account.")
-                
-        except Exception as e:
-            self.logger.error(f"Error listing channels: {str(e)}")
-
     def toggle_schedule(self, state):
         self.schedule_datetime.setEnabled(state == Qt.Checked)
         # if state == Qt.Checked:
