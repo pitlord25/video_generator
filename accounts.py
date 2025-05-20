@@ -92,6 +92,14 @@ class AccountManager:
                 
                 # Test the credentials by getting user info
                 youtube = build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
+                response = youtube.channels().list(part="snippet", mine=True).execute()
+                
+                if not response.get('items'):
+                    self.log("Failed to get channel info for new account", "error")
+                    return False
+                
+                # Get the first channel as the default identifier
+                channel_name = response['items'][0]['snippet']['title']
                 
                 # Serialize credentials to string
                 credentials_bytes = pickle.dumps(credentials)
