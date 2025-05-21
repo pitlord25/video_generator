@@ -768,7 +768,7 @@ class VideoGeneratorApp(QMainWindow):
         intro_prompt = intro_prompt.replace('$title', video_title)
         looping_prompt = looping_prompt.replace('$title', video_title)
         outro_prompt = outro_prompt.replace('$title', video_title)
-        images_prompt = outro_prompt.replace('$title', video_title)
+        images_prompt = images_prompt.replace('$title', video_title)
 
         loop_length = self.prompt_loop_spinbox.value()
         word_limit = self.audio_word_limit_spinbox.value()
