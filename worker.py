@@ -85,6 +85,9 @@ class GenerationWorker(QThread):
     def generate_chunk_image(self, openai_helper, prompt, output_dir, idx):
         """Generate a single image file asynchronously"""
         try:
+            with open(os.path.join(output_dir, f"image{idx + 1}-prompt.txt"), 'w') as f:
+                f.write(prompt)
+            
             image_data = openai_helper.generate_image(
                 prompt=prompt,
                 size="landscape",
@@ -193,8 +196,8 @@ class GenerationWorker(QThread):
 
             total_script = intro_script + '\n\n' + looping_script + '\n\n' + outro_script
 
-            sanitize_for_script(total_script)
-            sanitize_for_script(intro_script)
+            total_script = sanitize_for_script(total_script)
+            intro_script = sanitize_for_script(intro_script)
 
             # Save script as a file
             with open(os.path.join(output_dir, 'script.txt'), 'w', encoding='utf-8') as file:
