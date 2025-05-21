@@ -21,7 +21,6 @@ class GenerationWorker(QThread):
         self.video_title = video_title
         self.thumbnail_prompt = thumbnail_prompt
         self.images_prompt = images_prompt
-        self.images_prompt = images_prompt
         self.intro_prompt = intro_prompt
         self.looping_prompt = looping_prompt
         self.outro_prompt = outro_prompt
