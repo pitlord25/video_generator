@@ -13,10 +13,11 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QFileDialog,
                              QGroupBox, QSpinBox, QGridLayout, QSplitter, QSpacerItem, QSizePolicy,
                              QMessageBox, QTabWidget, QScrollArea, QStyleFactory,
-                             QCheckBox, QDateTimeEdit)
+                             QCheckBox, QDateTimeEdit, QDialog)
 
 from accounts import AccountManagerDialog, AccountManager  # Your account logic
 from uploader import UploadThread
+from variables import VariableDialog
 
 
 class VideoGeneratorApp(QMainWindow):
@@ -33,7 +34,7 @@ class VideoGeneratorApp(QMainWindow):
     def init_ui(self):
         self.setWindowTitle('AI Video Generator')
         self.setGeometry(100, 100, 1200, 800)
-        self.setMaximumSize(1920, 1080)
+        # self.setMaximumSize(1920, 1080)
         self.setMinimumSize(900, 700)
         
         self.account_manager = AccountManager(
@@ -42,6 +43,7 @@ class VideoGeneratorApp(QMainWindow):
             logger=self.logger
         )
         self.selected_channel = None  # Store selected channel (dict with 'id' and 'title')
+        self.variables = {}
 
         # Create central widget
         central_widget = QWidget()
@@ -306,7 +308,8 @@ class VideoGeneratorApp(QMainWindow):
         prompts_tab = QScrollArea()
         prompts_tab.setWidgetResizable(True)
         prompts_content = QWidget()
-        prompts_layout = QGridLayout(prompts_content)
+        prompts_layout = QVBoxLayout(prompts_content)
+        prompts_input_layout = QGridLayout()
 
         # Thumbnail Prompt Group
         thumbnail_group = self.create_group_box("Thumbnail Prompt")
@@ -322,7 +325,7 @@ class VideoGeneratorApp(QMainWindow):
         thumbnail_layout.addWidget(thumbnail_label)
         thumbnail_layout.addWidget(self.thumbnail_prompt_input)
         thumbnail_group.setLayout(thumbnail_layout)
-        prompts_layout.addWidget(thumbnail_group, 0, 0)
+        prompts_input_layout.addWidget(thumbnail_group, 0, 0)
 
         # Images Prompt Group
         images_group = self.create_group_box("Images Prompt")
@@ -337,7 +340,7 @@ class VideoGeneratorApp(QMainWindow):
         images_layout.addWidget(images_label)
         images_layout.addWidget(self.images_prompt_input)
         images_group.setLayout(images_layout)
-        prompts_layout.addWidget(images_group, 1, 0)
+        prompts_input_layout.addWidget(images_group, 1, 0)
         
         # Disclamier Text Group
         disclaimer_group = self.create_group_box("Disclaimer Text")
@@ -352,7 +355,7 @@ class VideoGeneratorApp(QMainWindow):
         disclaimer_layout.addWidget(disclaimer_label)
         disclaimer_layout.addWidget(self.disclaimer_input)
         disclaimer_group.setLayout(disclaimer_layout)
-        prompts_layout.addWidget(disclaimer_group, 2,0)
+        prompts_input_layout.addWidget(disclaimer_group, 2,0)
 
         # Script Prompts Group
         script_group = self.create_group_box("Script Prompts")
@@ -387,7 +390,32 @@ class VideoGeneratorApp(QMainWindow):
         script_layout.addWidget(self.outro_prompt_input)
 
         script_group.setLayout(script_layout)
-        prompts_layout.addWidget(script_group, 0, 1, 3, 1)
+        prompts_input_layout.addWidget(script_group, 0, 1, 3, 1)
+        
+        # Button to manage variables.
+        manage_prompt_variables_layout = QHBoxLayout()
+        space = QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.manage_prompt_variables_button = QPushButton("Manage Variables")
+        self.manage_prompt_variables_button.clicked.connect(self.open_variable_dialog)
+        manage_prompt_variables_layout.addItem(space)
+        self.manage_prompt_variables_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3d85c6;
+                color: white;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #5a9bd5;
+            }
+            QPushButton:pressed {
+                background-color: #2a5885;
+            }
+        """)
+        manage_prompt_variables_layout.addWidget(self.manage_prompt_variables_button)
+        
+        prompts_layout.addLayout(prompts_input_layout)
+        prompts_layout.addLayout(manage_prompt_variables_layout)
 
         # Set content widget for scroll area
         prompts_tab.setWidget(prompts_content)
@@ -617,6 +645,7 @@ class VideoGeneratorApp(QMainWindow):
                 "intro_prompt": self.intro_prompt_input.toPlainText(),
                 "looping_prompt": self.looping_prompt_input.toPlainText(),
                 "outro_prompt": self.outro_prompt_input.toPlainText(),
+                "prompt_variables": self.variables,
                 "loop_length": self.prompt_loop_spinbox.value(),
                 "audio_word_limit": self.audio_word_limit_spinbox.value(),
                 "thumbnail_count": self.image_chunk_count_spinbox.value(),
@@ -669,6 +698,7 @@ class VideoGeneratorApp(QMainWindow):
             self.outro_prompt_input.setPlainText(
                 settings.get("outro_prompt", ""))
             self.prompt_loop_spinbox.setValue(settings.get("loop_length", 3))
+            self.variables = settings.get("prompt_variables")
             self.audio_word_limit_spinbox.setValue(
                 settings.get("audio_word_limit", 400))
             self.image_chunk_count_spinbox.setValue(
@@ -725,12 +755,12 @@ class VideoGeneratorApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"All prompts are required")
             return
 
-        if not hasattr(self, 'credentials') or not self.credentials:
-            self.logger.error(
-                "Need to load Google client secret JSON file to upload video to YouTube!")
-            QMessageBox.critical(
-                self, "Error", f"Need to load Google client secret JSON file to upload video to YouTube!")
-            return
+        # if not hasattr(self, 'credentials') or not self.credentials:
+        #     self.logger.error(
+        #         "Need to load Google client secret JSON file to upload video to YouTube!")
+        #     QMessageBox.critical(
+        #         self, "Error", f"Need to load Google client secret JSON file to upload video to YouTube!")
+        #     return
 
         video_title = video_title.replace(' ', '-')
         self.video_title = video_title
@@ -738,11 +768,21 @@ class VideoGeneratorApp(QMainWindow):
         intro_prompt = intro_prompt.replace('$title', video_title)
         looping_prompt = looping_prompt.replace('$title', video_title)
         outro_prompt = outro_prompt.replace('$title', video_title)
+        images_prompt = outro_prompt.replace('$title', video_title)
 
         loop_length = self.prompt_loop_spinbox.value()
         word_limit = self.audio_word_limit_spinbox.value()
         image_count = self.image_chunk_count_spinbox.value()
         image_word_limit = self.image_chunk_word_limit_spinbox.value()
+        
+        for key in self.variables:
+            keyword = f"${key}"
+            value = self.variables[key]
+            thumbnail_prompt = thumbnail_prompt.replace(keyword, value)
+            intro_prompt = intro_prompt.replace(keyword, value)
+            looping_prompt = looping_prompt.replace(keyword, value)
+            outro_prompt = outro_prompt.replace(keyword, value)
+            images_prompt = images_prompt.replace(keyword, value)
 
         # Create a worker thread to handle the generation process
         self.worker = GenerationWorker(
@@ -772,7 +812,7 @@ class VideoGeneratorApp(QMainWindow):
     def update_operation(self, operation):
         self.current_operation_label.setText(operation)
 
-    def generation_finished(self):
+    def generation_finished(self, description):
         self.logger.info("Video generation completed")
         self.current_operation_label.setText("Generation completed")
         self.progress_bar.setValue(100)
@@ -786,11 +826,24 @@ class VideoGeneratorApp(QMainWindow):
         thumbnail_path = os.path.join(self.video_title, "thumbnail.jpg")
         title = self.video_title_input.text()
         category = self.category_id_edit.text()
+        video_description = description + "\n\n" + self.disclaimer_input.toPlainText()
         privacy_status = "public"
         made_for_kids = False
         publish_at = None
         if self.schedule_checkbox.isChecked():
             publish_at = self.schedule_datetime.dateTime().toPyDateTime()
+            # Convert local datetime to UTC
+            import datetime
+            import pytz
+            
+            # Get your local timezone
+            local_timezone = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
+            
+            # Make the datetime timezone-aware with your local timezone
+            aware_local_time = publish_at.replace(tzinfo=local_timezone)
+            
+            # Convert to UTC
+            publish_at = aware_local_time.astimezone(pytz.UTC)
         
         self.youtube_upload_progress_bar.setValue(0)
         self.youtube_status_label.setText("Status: Preparing upload...")
@@ -799,7 +852,7 @@ class VideoGeneratorApp(QMainWindow):
             credentials=self.credentials, 
             video_path=video_path, 
             title=title, 
-            description="", 
+            description=video_description, 
             category=category, 
             tags="", 
             privacy_status=privacy_status, 
@@ -885,16 +938,26 @@ class VideoGeneratorApp(QMainWindow):
         
     def toggle_schedule(self, state):
         self.schedule_datetime.setEnabled(state == Qt.Checked)
-        # if state == Qt.Checked:
-        #     # Force public when scheduling
-        #     self.set_privacy("public")
-        #     self.privacy_public.setEnabled(False)
-        #     self.privacy_unlisted.setEnabled(False)
-        #     self.privacy_private.setEnabled(False)
-        # else:
-        #     self.privacy_public.setEnabled(True)
-        #     self.privacy_unlisted.setEnabled(True)
-        #     self.privacy_private.setEnabled(True)
+        
+    def open_variable_dialog(self):
+        """Open the variable management dialog"""
+        dialog = VariableDialog(self.variables, self)
+        dialog.variables_saved.connect(self.handle_variables_saved)
+        
+        # Show dialog and process result
+        if dialog.exec_() == QDialog.Accepted:
+            # Variables are handled through signal
+            pass
+    
+    def handle_variables_saved(self, variables):
+        """Handle the variables saved from dialog"""
+        self.variables = variables
+        
+        # Update status label
+        if self.variables:
+            count = len(self.variables)
+            print(self.variables)
+            self.logger.info(f"{count} variable{'s' if count > 1 else ''} defined")
 
     def toggle_ui_elements(self, enabled):
         # Enable/disable all input widgets
@@ -914,6 +977,7 @@ class VideoGeneratorApp(QMainWindow):
         self.settings_load_button.setEnabled(enabled)
         self.generate_btn.setEnabled(enabled)
         self.load_youtube_credential_button.setEnabled(enabled)
+        self.manage_prompt_variables_button.setEnabled(enabled)
 
         # Update button appearance
         if not enabled:

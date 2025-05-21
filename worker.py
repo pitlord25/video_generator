@@ -1,26 +1,7 @@
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer
-from utils import OpenAIHelper, create_output_directory, sanitize_for_script, save_image_base64, split_text_into_chunks, save_audio_as_file
-from threading import Thread
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from utils import OpenAIHelper, create_output_directory, sanitize_for_script, save_image_base64, split_text_into_chunks, save_audio_as_file, get_first_paragraph
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os, shutil, subprocess, random, math, traceback
-
-
-def call_with_future(fn, future, args, kwargs):
-    try:
-        result = fn(*args, **kwargs)
-        future.set_result(result)
-    except Exception as exc:
-        future.set_exception(exc)
-
-
-def threaded(fn):
-    def wrapper(*args, **kwargs):
-        future = Future()
-        Thread(target=call_with_future, args=(
-            fn, future, args, kwargs)).start()
-        return future
-    return wrapper
-
 
 POOL_SIZE = 10
 
@@ -28,7 +9,7 @@ POOL_SIZE = 10
 class GenerationWorker(QThread):
     progress_update = pyqtSignal(int)
     operation_update = pyqtSignal(str)
-    finished = pyqtSignal()
+    finished = pyqtSignal(str)
 
     def __init__(self, api_key, video_title,
                  thumbnail_prompt, images_prompt,
@@ -430,4 +411,5 @@ class GenerationWorker(QThread):
             traceback.print_exc()
 
         finally:
-            self.finished.emit()
+            description = get_first_paragraph(intro_script)
+            self.finished.emit(description)
