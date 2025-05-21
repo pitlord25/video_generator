@@ -775,14 +775,15 @@ class VideoGeneratorApp(QMainWindow):
         image_count = self.image_chunk_count_spinbox.value()
         image_word_limit = self.image_chunk_word_limit_spinbox.value()
         
-        for key in self.variables:
-            keyword = f"${key}"
-            value = self.variables[key]
-            thumbnail_prompt = thumbnail_prompt.replace(keyword, value)
-            intro_prompt = intro_prompt.replace(keyword, value)
-            looping_prompt = looping_prompt.replace(keyword, value)
-            outro_prompt = outro_prompt.replace(keyword, value)
-            images_prompt = images_prompt.replace(keyword, value)
+        if self.variables is not None:
+            for key in self.variables:
+                keyword = f"${key}"
+                value = self.variables[key]
+                thumbnail_prompt = thumbnail_prompt.replace(keyword, value)
+                intro_prompt = intro_prompt.replace(keyword, value)
+                looping_prompt = looping_prompt.replace(keyword, value)
+                outro_prompt = outro_prompt.replace(keyword, value)
+                images_prompt = images_prompt.replace(keyword, value)
 
         # Create a worker thread to handle the generation process
         self.worker = GenerationWorker(
