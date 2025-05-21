@@ -698,7 +698,7 @@ class VideoGeneratorApp(QMainWindow):
             self.outro_prompt_input.setPlainText(
                 settings.get("outro_prompt", ""))
             self.prompt_loop_spinbox.setValue(settings.get("loop_length", 3))
-            self.variables = settings.get("prompt_variables")
+            self.variables = settings.get("prompt_variables") or {}
             self.audio_word_limit_spinbox.setValue(
                 settings.get("audio_word_limit", 400))
             self.image_chunk_count_spinbox.setValue(
@@ -755,12 +755,12 @@ class VideoGeneratorApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"All prompts are required")
             return
 
-        # if not hasattr(self, 'credentials') or not self.credentials:
-        #     self.logger.error(
-        #         "Need to load Google client secret JSON file to upload video to YouTube!")
-        #     QMessageBox.critical(
-        #         self, "Error", f"Need to load Google client secret JSON file to upload video to YouTube!")
-        #     return
+        if not hasattr(self, 'credentials') or not self.credentials:
+            self.logger.error(
+                "Need to load Google client secret JSON file to upload video to YouTube!")
+            QMessageBox.critical(
+                self, "Error", f"Need to load Google client secret JSON file to upload video to YouTube!")
+            return
 
         video_title = video_title.replace(' ', '-')
         self.video_title = video_title
