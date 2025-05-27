@@ -932,8 +932,6 @@ class VideoGeneratorApp(QMainWindow):
         self.logger.info("Video generation completed")
         self.current_operation_label.setText("Generation completed")
         self.progress_bar.setValue(100)
-
-        return
         
         # Upload Progress Start
         if not self.credentials or not self.credentials.valid:

@@ -41,8 +41,9 @@ class GenerationWorker(QThread):
         self.start_time = None
         self.step_times = {}
         
-        # GPU detection and settings
-        self.gpu_config = self._detect_gpu_capabilities()
+        # Initialize threading components for parallel audio generation
+        self.audio_progress_lock = threading.Lock()
+        self.completed_audio_count = 0
         
         try:
             with open(workflow_file, 'r') as f:
@@ -50,153 +51,6 @@ class GenerationWorker(QThread):
         except Exception as e:
             self.logger.error(f"Failed to load workflow file: {e}")
             raise
-
-    def _detect_gpu_capabilities(self):
-        """Detect available GPU acceleration options"""
-        gpu_config = {
-            'has_nvidia': False,
-            'has_amd': False,
-            'has_intel': False,
-            'encoder': 'libx264',  # fallback
-            'decoder': '',
-            'hwaccel': None,
-            'extra_args': []
-        }
-        
-        try:
-            # Test NVIDIA NVENC
-            result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], 
-                                  capture_output=True, text=True, timeout=10)
-            encoders = result.stdout
-            
-            if 'h264_nvenc' in encoders:
-                gpu_config['has_nvidia'] = True
-                gpu_config['encoder'] = 'h264_nvenc'
-                gpu_config['hwaccel'] = 'cuda'
-                gpu_config['extra_args'] = ['-preset', 'p4', '-tune', 'hq']
-                self.logger.info("🎮 NVIDIA GPU acceleration detected (NVENC)")
-            
-            elif 'h264_amf' in encoders:
-                gpu_config['has_amd'] = True
-                gpu_config['encoder'] = 'h264_amf'
-                gpu_config['extra_args'] = ['-quality', 'speed', '-rc', 'vbr_peak']
-                self.logger.info("🎮 AMD GPU acceleration detected (AMF)")
-            
-            elif 'h264_qsv' in encoders:
-                gpu_config['has_intel'] = True
-                gpu_config['encoder'] = 'h264_qsv'
-                gpu_config['hwaccel'] = 'qsv'
-                gpu_config['extra_args'] = ['-preset', 'fast']
-                self.logger.info("🎮 Intel GPU acceleration detected (QuickSync)")
-            
-            else:
-                self.logger.info("🖥️ No GPU acceleration detected, using CPU encoding")
-                
-        except Exception as e:
-            self.logger.warning(f"GPU detection failed: {e}, falling back to CPU")
-            
-        return gpu_config
-
-    def _get_gpu_encode_args(self, input_args=None, quality='balanced'):
-        """Get GPU-optimized encoding arguments"""
-        base_args = input_args or []
-        
-        if not self.gpu_config['has_nvidia'] and not self.gpu_config['has_amd'] and not self.gpu_config['has_intel']:
-            # CPU fallback with optimization
-            return base_args + ['-c:v', 'libx264', '-preset', 'faster', '-crf', '23']
-        
-        # GPU encoding arguments - hwaccel must come BEFORE input files
-        gpu_args = []
-        
-        # Add hardware acceleration BEFORE input files (if it exists in base_args)
-        if self.gpu_config['hwaccel']:
-            # Insert hwaccel right after ffmpeg command but before input files
-            if base_args and base_args[0] == 'ffmpeg':
-                gpu_args = [base_args[0], '-hwaccel', self.gpu_config['hwaccel']] + base_args[1:]
-            else:
-                gpu_args = ['-hwaccel', self.gpu_config['hwaccel']] + base_args
-        else:
-            gpu_args = base_args
-        
-        # Add encoder after input files
-        encoder_args = ['-c:v', self.gpu_config['encoder']]
-        
-        # Quality settings based on encoder
-        if self.gpu_config['has_nvidia']:
-            if quality == 'fast':
-                encoder_args.extend(['-preset', 'p1', '-tune', 'ull'])  # Ultra low latency
-            elif quality == 'balanced':
-                encoder_args.extend(['-preset', 'p4', '-tune', 'hq'])   # Balanced
-            else:  # high quality
-                encoder_args.extend(['-preset', 'p7', '-tune', 'hq', '-rc', 'vbr'])
-            encoder_args.extend(['-b:v', '5M', '-maxrate', '8M', '-bufsize', '10M'])
-            
-        elif self.gpu_config['has_amd']:
-            encoder_args.extend(['-quality', 'balanced', '-rc', 'vbr_peak'])
-            encoder_args.extend(['-b:v', '5M', '-maxrate', '8M'])
-            
-        elif self.gpu_config['has_intel']:
-            encoder_args.extend(['-preset', 'balanced', '-global_quality', '23'])
-        
-        return gpu_args + encoder_args
-
-    def _get_gpu_input_args(self, base_cmd):
-        """Get GPU-optimized input arguments (hwaccel must come before inputs)"""
-        if not base_cmd:
-            return []
-        
-        result = []
-        i = 0
-        
-        # Process the command, inserting hwaccel right after 'ffmpeg'
-        while i < len(base_cmd):
-            if base_cmd[i] == 'ffmpeg':
-                result.append(base_cmd[i])
-                # Add hwaccel right after ffmpeg if available
-                if self.gpu_config['hwaccel']:
-                    result.extend(['-hwaccel', self.gpu_config['hwaccel']])
-            else:
-                result.append(base_cmd[i])
-            i += 1
-        
-        return result
-
-    def _get_gpu_output_args(self, quality='balanced'):
-        """Get GPU encoder arguments for output"""
-        if not self.gpu_config['has_nvidia'] and not self.gpu_config['has_amd'] and not self.gpu_config['has_intel']:
-            return ['-c:v', 'libx264', '-preset', 'faster', '-crf', '23']
-        
-        encoder_args = ['-c:v', self.gpu_config['encoder']]
-        
-        # Quality settings based on encoder
-        if self.gpu_config['has_nvidia']:
-            if quality == 'fast':
-                encoder_args.extend(['-preset', 'p1', '-tune', 'ull'])
-            elif quality == 'balanced':
-                encoder_args.extend(['-preset', 'p4', '-tune', 'hq'])
-            else:  # high quality
-                encoder_args.extend(['-preset', 'p7', '-tune', 'hq', '-rc', 'vbr'])
-            encoder_args.extend(['-b:v', '5M', '-maxrate', '8M', '-bufsize', '10M'])
-            
-        elif self.gpu_config['has_amd']:
-            encoder_args.extend(['-quality', 'balanced', '-rc', 'vbr_peak'])
-            encoder_args.extend(['-b:v', '5M', '-maxrate', '8M'])
-            
-        elif self.gpu_config['has_intel']:
-            encoder_args.extend(['-preset', 'balanced', '-global_quality', '23'])
-        
-        return encoder_args
-    
-    def _get_gpu_filter_args(self, video_filter):
-        """Optimize video filters for GPU when possible"""
-        if self.gpu_config['has_nvidia']:
-            # For NVIDIA, we can use GPU-accelerated scaling
-            if 'scale=' in video_filter:
-                # Replace scale with scale_cuda for better performance
-                video_filter = video_filter.replace('scale=', 'scale_cuda=')
-            return ['-vf', video_filter]
-        else:
-            return ['-vf', video_filter]
 
     def cancel(self):
         """Allow cancellation of the worker thread"""
@@ -234,15 +88,7 @@ class GenerationWorker(QThread):
         self.logger.info("=" * 60)
         self.logger.info("🎬 VIDEO GENERATION RUNTIME SUMMARY")
         self.logger.info("=" * 60)
-        
-        # GPU info
-        if self.gpu_config['has_nvidia'] or self.gpu_config['has_amd'] or self.gpu_config['has_intel']:
-            encoder_type = "NVIDIA NVENC" if self.gpu_config['has_nvidia'] else \
-                          "AMD AMF" if self.gpu_config['has_amd'] else "Intel QuickSync"
-            self.logger.info(f"🎮 GPU Acceleration: {encoder_type} ({self.gpu_config['encoder']})")
-        else:
-            self.logger.info("🖥️ Encoding: CPU (libx264)")
-        
+                
         # Total runtime
         self.logger.info(f"📊 TOTAL RUNTIME: {self._format_duration(total_runtime)}")
         self.logger.info("-" * 40)
@@ -334,7 +180,7 @@ class GenerationWorker(QThread):
             self.logger.error(f"Command failed with exit code {e.returncode}")
             self.logger.error(f"stderr: {e.stderr}")
             raise Exception(f"FFmpeg operation failed: {e.stderr}")
-        
+       
     def _generate_single_audio(self, audio_task):
         """Generate a single audio file - thread-safe function"""
         idx, audio_chunk, output_dir = audio_task
@@ -364,7 +210,7 @@ class GenerationWorker(QThread):
             # Thread-safe progress update
             with self.audio_progress_lock:
                 self.completed_audio_count += 1
-                progress = int(45 + (self.completed_audio_count / len(audio_chunks)) * 20)
+                progress = int(45 + (self.completed_audio_count / self.total_audio_chunks) * 20)
                 self.progress_update.emit(progress)
             
             self.logger.info(f"🎵 Generated audio {idx + 1} for chunk (parallel)")
@@ -386,6 +232,7 @@ class GenerationWorker(QThread):
         # Reset progress tracking
         with self.audio_progress_lock:
             self.completed_audio_count = 0
+            self.total_audio_chunks = len(audio_chunks)
         
         # Create list of tasks (index, chunk, output_dir)
         audio_tasks = [(idx, chunk, output_dir) for idx, chunk in enumerate(audio_chunks)]
@@ -436,7 +283,7 @@ class GenerationWorker(QThread):
         
         self.logger.info(f"✅ Successfully generated {len(audio_chunks)} audio files in parallel")
         return True
-
+    
     def _safe_requests_call(self, url, data=None, timeout=300, max_retries=3):
         """Safe wrapper for requests with proper session management"""
         session = None
@@ -697,40 +544,7 @@ class GenerationWorker(QThread):
                 word_limit=self.word_limit
             )
 
-            for idx, audio_chunk in enumerate(audio_chunks):                
-                try:
-                    data = {
-                        'text': audio_chunk,
-                        'voice': "am_michael",
-                        'speed': 1,
-                        'language': "a"
-                    }
-                    
-                    result = self._safe_requests_call("http://localhost:8000/tts/base64", data, timeout=180)
-                    
-                    if 'audio_base64' not in result:
-                        raise Exception("No audio data in TTS response")
-                        
-                    audio_data = base64.b64decode(result['audio_base64'])
-                    
-                    # Save to file
-                    filename = os.path.join(output_dir, f"audio{idx+1}.wav")
-                    with open(filename, 'wb') as f:
-                        f.write(audio_data)
-                        
-                    self.logger.info(f"Generated audio {idx + 1}/{len(audio_chunks)} for chunk...")
-                    self.progress_update.emit(int(45 + (idx + 1) / len(audio_chunks) * 20))
-                    
-                    # Clear audio data and force garbage collection
-                    del audio_data
-                    gc.collect()
-                    
-                    # Small delay between audio generations
-                    # time.sleep(0.5)
-                    
-                except Exception as e:
-                    self.logger.error(f"Failed to generate audio {idx + 1}: {e}")
-                    raise
+            self._generate_audio_parallel(audio_chunks, output_dir, max_workers=4)
 
             self._log_step_time("Audio Generation", step_start)
 
@@ -742,29 +556,29 @@ class GenerationWorker(QThread):
             # === Step 1: Merge audio files ===
             audio_list_file = os.path.join(temp_folder_path, 'audios.txt')
             
-            # num_audios = len(audio_chunks)
-            num_audios = 11 
+            num_audios = len(audio_chunks)
+            # num_audios =11 
 
             # Create list file for WAV files
             with open(audio_list_file, 'w') as f:
                 for i in range(1, num_audios + 1):
-                    path = os.path.abspath(os.path.join(output_dir, f"audio{i}.wav"))
+                    path = os.path.abspath(os.path.join(output_dir, f"audio{i}.wav"))  # Changed to .wav
                     f.write(f"file '{path}'\n")
 
-            merged_audio = os.path.join(temp_folder_path, 'merged_audio.wav')
+            merged_audio = os.path.join(temp_folder_path, 'merged_audio.wav')  # Keep as WAV initially
 
-            # Merge WAV files - using GPU-optimized command
-            cmd_concat_audio = self._get_gpu_encode_args([
+            # Merge WAV files - this should work smoothly since they're all the same format
+            cmd_concat_audio = [
                 'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
                 '-i', audio_list_file, 
-                '-c', 'copy',
+                '-c', 'copy',  # Can safely copy WAV files
                 merged_audio
-            ])
+            ]
 
             self.logger.info("🎵 Merging WAV audio files...")
             self._safe_subprocess_run(cmd_concat_audio, timeout=180)
 
-            # Convert merged WAV to MP3 with GPU optimization
+            # Optional: Convert merged WAV to MP3 for final video (smaller file size)
             merged_audio_mp3 = os.path.join(temp_folder_path, 'merged_audio.mp3')
             cmd_wav_to_mp3 = [
                 'ffmpeg', '-y', '-i', merged_audio,
@@ -801,10 +615,10 @@ class GenerationWorker(QThread):
             zoom_duration = 4  # seconds per image (except last)
             output_size = '1920x1080'
 
-            # === Step 2: Create zoomed clips with GPU acceleration ===
+            # === Step 2: Create zoomed clips ===
             zoom_clips = []
-            num_images = 3
-            # num_images = len(image_chunks)
+            # num_images = 3
+            num_images = len(image_chunks)
             
             for idx in range(1, num_images + 1):
                 self._check_cancelled()
@@ -827,67 +641,39 @@ class GenerationWorker(QThread):
                 try:
                     if idx < num_images:
                         duration = zoom_duration
-
-                        # Construct command properly with GPU acceleration
-                        base_cmd = ['ffmpeg', '-y']
-                        
-                        # Add hardware acceleration if available (must come before inputs)
-                        if self.gpu_config['hwaccel']:
-                            base_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
-                        
-                        # Add input
-                        base_cmd.extend(['-loop', '1', '-i', img])
-                        
-                        # Add output encoding options
-                        base_cmd.extend(self._get_gpu_output_args(quality='fast'))
-                        
-                        # Add filters and output options
-                        base_cmd.extend([
+                        cmd = [
+                            'ffmpeg', '-y', '-loop', '1', '-i', img,
+                            '-preset', 'ultrafast',
+                            '-threads', '4',  # Reduced thread count
                             '-vf', zoom_filter,
                             '-s', output_size,
-                            '-t', str(duration), 
-                            '-pix_fmt', 'yuv420p', 
-                            out_clip
-                        ])
-                        
-                        self.logger.info(f"🎥 Creating GPU-accelerated zoom clip for {img} (duration: {duration:.2f}s)")
-                        self._safe_subprocess_run(base_cmd, timeout=120)
-
+                            '-t', str(duration), '-pix_fmt', 'yuv420p', out_clip
+                        ]
+                        self.logger.info(f"🎥 Creating zoom clip for {img} (duration: {duration:.2f}s)")
+                        self._safe_subprocess_run(cmd, timeout=120)
                     else:
-                        # Apply particle effect to the last image with GPU acceleration
+                        # Apply particle effect to the last image
                         particle_effect = os.path.join(temp_folder_path, 'last_with_particles.mp4')
                         extended_particle_effect = os.path.join(temp_folder_path, 'extended_last_with_particles.mp4')
 
-                        # GPU-optimized particle effect combination
-                        base_cmd = ['ffmpeg']
-
-                        # Add hardware acceleration if available
-                        if self.gpu_config['hwaccel']:
-                            base_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
-
-                        base_cmd.extend(['-loop', '1', '-i', img, '-i', os.path.join("reference", 'particles.webm')])
-
-                        cmd_particle = base_cmd + self._get_gpu_output_args(quality='balanced') + [
+                        # Combine image with particle effect
+                        cmd_particle = [
+                            'ffmpeg', '-loop', '1', '-i', img, '-i', os.path.join("reference", 'particles.webm'),
                             '-filter_complex', "[0:v]scale=1920:1080,setsar=1[bg];"
                             "[1:v]scale=1920:1080,format=rgba,colorchannelmixer=aa=0.3[particles];"
                             "[bg][particles]overlay=format=auto",
                             '-shortest', '-pix_fmt', 'yuv420p',
-                            '-s', output_size, particle_effect
+                            '-s', output_size, "-y", particle_effect
                         ]
-                                                
-                        self.logger.info(f"✨ Applying GPU-accelerated particle effect to {img}")
+                        self.logger.info(f"✨ Applying particle effect to {img}")
                         self._safe_subprocess_run(cmd_particle, timeout=180)
 
-                        # Extend the particle effect video with GPU optimization
-                        base_extend_cmd = ['ffmpeg']
-                        if self.gpu_config['hwaccel']:
-                            base_extend_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
-
-                        base_extend_cmd.extend(['-stream_loop', f'{str(particle_loops)}', '-i', particle_effect])
-
-                        cmd_extend = base_extend_cmd + ['-c:v', 'copy', extended_particle_effect]
-                        
-                        self.logger.info(f"🔄 Extending particle effect video duration with GPU")
+                        # Extend the particle effect video
+                        cmd_extend = [
+                            'ffmpeg', '-stream_loop', f'{str(particle_loops)}', '-i', particle_effect,
+                            '-c', 'copy', extended_particle_effect
+                        ]
+                        self.logger.info(f"🔄 Extending particle effect video duration")
                         self._safe_subprocess_run(cmd_extend, timeout=120)
 
                         zoom_clips[-1] = os.path.abspath(extended_particle_effect)
@@ -898,61 +684,37 @@ class GenerationWorker(QThread):
                     self.logger.error(f"Failed to create video clip {idx}: {e}")
                     raise
 
-            # === Step 3: Concatenate video clips with GPU acceleration ===
+            # === Step 3: Concatenate video clips ===
             ts_clips = []
             for clip in zoom_clips:
                 self._check_cancelled()
                 
                 ts_path = clip.replace(".mp4", ".ts")
-                
-                # GPU-optimized TS conversion
-                base_cmd = ["ffmpeg", "-y"]
-                if self.gpu_config['hwaccel']:
-                    base_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
-
-                base_cmd.extend(["-i", clip])
-
-                cmd = base_cmd + [
-                    "-c:v", "copy", "-bsf:v", "h264_mp4toannexb",
+                self._safe_subprocess_run([
+                    "ffmpeg", "-y", "-i", clip,
+                    "-c", "copy", "-bsf:v", "h264_mp4toannexb",
                     "-f", "mpegts", ts_path
-                ]
-                
-                self._safe_subprocess_run(cmd, timeout=120)
+                ], timeout=120)
                 ts_clips.append(ts_path)
 
             full_video = os.path.join(temp_folder_path, 'slideshow.mp4')
             concat_input = '|'.join(ts_clips)
-            
-            # GPU-optimized video concatenation
-            base_concat_cmd = ["ffmpeg", "-y"]
-            if self.gpu_config['hwaccel']:
-                base_concat_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
-
-            base_concat_cmd.extend(["-i", f"concat:{concat_input}"])
-
-            cmd_concat_video = base_concat_cmd + [
-                "-c:v", "copy", "-bsf:a", "aac_adtstoasc", full_video
+            cmd_concat_video = [
+                "ffmpeg", "-y", "-i", f"concat:{concat_input}",
+                "-c", "copy", "-bsf:a", "aac_adtstoasc", full_video
             ]
-            
-            self.logger.info("🔗 GPU-accelerated video concatenation...")
             self._safe_subprocess_run(cmd_concat_video, timeout=300)
 
-            # === Step 4: Combine the video and audio with GPU acceleration ===
-            base_final_cmd = ['ffmpeg', '-y']
-            if self.gpu_config['hwaccel']:
-                base_final_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
-
-            base_final_cmd.extend(['-i', full_video, '-i', merged_audio])
-
-            cmd_final = base_final_cmd + self._get_gpu_output_args(quality='fast') + [
-                '-c:a', 'aac', '-shortest', 
+            # === Step 4: Combine the video and audio ===
+            cmd_final = [
+                'ffmpeg', '-y', '-i', full_video, '-i', merged_audio,
+                '-c:v', 'copy', '-c:a', 'aac', '-shortest', 
                 os.path.join(output_dir, output_video)
             ]
-            
-            self.logger.info(f"🔗 GPU-accelerated final video assembly: {output_video}...")
+            self.logger.info(f"🔗 Combining video and audio into {output_video}...")
             self._safe_subprocess_run(cmd_final, timeout=600)
 
-            self.logger.info("✅ GPU-accelerated final video with audio created successfully!")
+            self.logger.info("✅ Final video with audio created successfully!")
             self.progress_update.emit(100)
             self._log_step_time("Video Assembly", step_start)
 
@@ -960,8 +722,8 @@ class GenerationWorker(QThread):
             self._log_runtime_summary()
 
             # Final cleanup
-            if os.path.exists(temp_folder_path):
-                shutil.rmtree(temp_folder_path)
+            # if os.path.exists(temp_folder_path):
+            #     shutil.rmtree(temp_folder_path)
                 
             self.operation_update.emit("Completed")
 
