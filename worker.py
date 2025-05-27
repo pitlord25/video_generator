@@ -1,7 +1,11 @@
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer
-from utils import OpenAIHelper, create_output_directory, sanitize_for_script, save_image_base64, split_text_into_chunks, save_audio_as_file, get_first_paragraph
+from PyQt5.QtCore import QThread, pyqtSignal
+from utils import OpenAIHelper, create_output_directory, sanitize_for_script, split_text_into_chunks, get_first_paragraph
+from logging import Logger
+import os, shutil, subprocess, random, math, traceback, json, requests, base64
+import time
+import gc  # Add garbage collection
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import os, shutil, subprocess, random, math, traceback
 
 POOL_SIZE = 10
 
@@ -10,12 +14,14 @@ class GenerationWorker(QThread):
     progress_update = pyqtSignal(int)
     operation_update = pyqtSignal(str)
     finished = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
 
     def __init__(self, api_key, video_title,
                  thumbnail_prompt, images_prompt,
                  intro_prompt, looping_prompt, outro_prompt,
-                 loop_length, word_limit, image_count,
-                 image_word_limit, logger):
+                 loop_length, word_limit, image_count, image_word_limit,
+                 workflow_file, 
+                 logger: Logger):
         super().__init__()
         self.api_key = api_key
         self.video_title = video_title
@@ -29,172 +35,542 @@ class GenerationWorker(QThread):
         self.image_count = image_count
         self.image_word_limit = image_word_limit
         self.logger = logger
-
-    def generate_audio_chunk(self, openai_helper, chunk, output_dir, idx):
-        """Generate a single audio file asynchronously"""
+        self._is_cancelled = False
+        
+        # Runtime tracking
+        self.start_time = None
+        self.step_times = {}
+        
+        # GPU detection and settings
+        self.gpu_config = self._detect_gpu_capabilities()
+        
         try:
-            audio_data = openai_helper.generate_audio(prompt=chunk)
-            save_audio_as_file(
-                audio_data=audio_data,
-                output_file=os.path.join(output_dir, f"audio{idx + 1}.mp3")
-            )
+            with open(workflow_file, 'r') as f:
+                self.comfy_workflow = json.load(f)
         except Exception as e:
-            self.logger.error(f"Error generating audio: {str(e)}")
-            return None
+            self.logger.error(f"Failed to load workflow file: {e}")
+            raise
 
-    def update_audio_progress(self):
-        """Update the progress specifically for audio generation"""
-        self.completed_audio_chunks += 1
-        progress = 45 + (self.completed_audio_chunks /
-                         self.total_audio_chunks * 20)
-        self.progress_update.emit(int(progress))
-        self.logger.info(
-            f"Generated audio {self.completed_audio_chunks}/{self.total_audio_chunks}!")
-
-    def update_image_progress(self):
-        """Update the progress specifically for audio generation"""
-        self.completed_image_chunks += 1
-        progress = 25 + (self.completed_image_chunks /
-                         self.total_image_chunks * 20)
-        self.progress_update.emit(int(progress))
-        self.logger.info(
-            f"Generated image {self.completed_image_chunks}/{self.total_image_chunks}!")
-
-    def generate_audios(self, openai_helper, chunks, output_dir):
-        futures = []
-        # Limit pool size based on chunk count
-        pool_size = min(POOL_SIZE, len(chunks))
-        self.completed_audio_chunks = 0
-        self.total_audio_chunks = len(chunks)
-        with ThreadPoolExecutor(max_workers=pool_size) as executor:
-            # Submit all tasks
-            for idx, chunk in enumerate(chunks):
-                future = executor.submit(
-                    self.generate_audio_chunk, openai_helper, chunk, output_dir, idx)
-                futures.append(future)
-
-            # Process completed tasks and update progress
-            for future in as_completed(futures):
-                try:
-                    # Update progress on the main thread using QTimer
-                    QTimer.singleShot(0, self.update_audio_progress)
-                except Exception as e:
-                    self.logger.error(f"Task failed with exception: {e}")
-
-    def generate_chunk_image(self, openai_helper, prompt, output_dir, idx):
-        """Generate a single image file asynchronously"""
+    def _detect_gpu_capabilities(self):
+        """Detect available GPU acceleration options"""
+        gpu_config = {
+            'has_nvidia': False,
+            'has_amd': False,
+            'has_intel': False,
+            'encoder': 'libx264',  # fallback
+            'decoder': '',
+            'hwaccel': None,
+            'extra_args': []
+        }
+        
         try:
-            with open(os.path.join(output_dir, f"image{idx + 1}-prompt.txt"), 'w') as f:
-                f.write(prompt)
+            # Test NVIDIA NVENC
+            result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], 
+                                  capture_output=True, text=True, timeout=10)
+            encoders = result.stdout
             
-            image_data = openai_helper.generate_image(
-                prompt=prompt,
-                size="landscape",
-                quality="low"
-            )
-            save_image_base64(
-                image_data=image_data,
-                output_file=os.path.join(output_dir, f"image{idx + 1}.jpg"),
-                width=1920,
-                height=1080
-            )
-            # Update progress for this specific audio generation
-            return
+            if 'h264_nvenc' in encoders:
+                gpu_config['has_nvidia'] = True
+                gpu_config['encoder'] = 'h264_nvenc'
+                gpu_config['hwaccel'] = 'cuda'
+                gpu_config['extra_args'] = ['-preset', 'p4', '-tune', 'hq']
+                self.logger.info("🎮 NVIDIA GPU acceleration detected (NVENC)")
+            
+            elif 'h264_amf' in encoders:
+                gpu_config['has_amd'] = True
+                gpu_config['encoder'] = 'h264_amf'
+                gpu_config['extra_args'] = ['-quality', 'speed', '-rc', 'vbr_peak']
+                self.logger.info("🎮 AMD GPU acceleration detected (AMF)")
+            
+            elif 'h264_qsv' in encoders:
+                gpu_config['has_intel'] = True
+                gpu_config['encoder'] = 'h264_qsv'
+                gpu_config['hwaccel'] = 'qsv'
+                gpu_config['extra_args'] = ['-preset', 'fast']
+                self.logger.info("🎮 Intel GPU acceleration detected (QuickSync)")
+            
+            else:
+                self.logger.info("🖥️ No GPU acceleration detected, using CPU encoding")
+                
         except Exception as e:
-            self.logger.error(f"Error generating video: {str(e)}")
-            return None
+            self.logger.warning(f"GPU detection failed: {e}, falling back to CPU")
+            
+        return gpu_config
 
-    def generate_images(self, openai_helper, chunks, images_prompt, output_dir, script_base):
-        futures = []
-        # Limit pool size based on chunk count
-        pool_size = min(POOL_SIZE, len(chunks))
-        self.total_image_chunks = len(chunks)
-        self.completed_image_chunks = 0
-        with ThreadPoolExecutor(max_workers=pool_size) as executor:
+    def _get_gpu_encode_args(self, input_args=None, quality='balanced'):
+        """Get GPU-optimized encoding arguments"""
+        base_args = input_args or []
+        
+        if not self.gpu_config['has_nvidia'] and not self.gpu_config['has_amd'] and not self.gpu_config['has_intel']:
+            # CPU fallback with optimization
+            return base_args + ['-c:v', 'libx264', '-preset', 'faster', '-crf', '23']
+        
+        # GPU encoding arguments - hwaccel must come BEFORE input files
+        gpu_args = []
+        
+        # Add hardware acceleration BEFORE input files (if it exists in base_args)
+        if self.gpu_config['hwaccel']:
+            # Insert hwaccel right after ffmpeg command but before input files
+            if base_args and base_args[0] == 'ffmpeg':
+                gpu_args = [base_args[0], '-hwaccel', self.gpu_config['hwaccel']] + base_args[1:]
+            else:
+                gpu_args = ['-hwaccel', self.gpu_config['hwaccel']] + base_args
+        else:
+            gpu_args = base_args
+        
+        # Add encoder after input files
+        encoder_args = ['-c:v', self.gpu_config['encoder']]
+        
+        # Quality settings based on encoder
+        if self.gpu_config['has_nvidia']:
+            if quality == 'fast':
+                encoder_args.extend(['-preset', 'p1', '-tune', 'ull'])  # Ultra low latency
+            elif quality == 'balanced':
+                encoder_args.extend(['-preset', 'p4', '-tune', 'hq'])   # Balanced
+            else:  # high quality
+                encoder_args.extend(['-preset', 'p7', '-tune', 'hq', '-rc', 'vbr'])
+            encoder_args.extend(['-b:v', '5M', '-maxrate', '8M', '-bufsize', '10M'])
+            
+        elif self.gpu_config['has_amd']:
+            encoder_args.extend(['-quality', 'balanced', '-rc', 'vbr_peak'])
+            encoder_args.extend(['-b:v', '5M', '-maxrate', '8M'])
+            
+        elif self.gpu_config['has_intel']:
+            encoder_args.extend(['-preset', 'balanced', '-global_quality', '23'])
+        
+        return gpu_args + encoder_args
+
+    def _get_gpu_input_args(self, base_cmd):
+        """Get GPU-optimized input arguments (hwaccel must come before inputs)"""
+        if not base_cmd:
+            return []
+        
+        result = []
+        i = 0
+        
+        # Process the command, inserting hwaccel right after 'ffmpeg'
+        while i < len(base_cmd):
+            if base_cmd[i] == 'ffmpeg':
+                result.append(base_cmd[i])
+                # Add hwaccel right after ffmpeg if available
+                if self.gpu_config['hwaccel']:
+                    result.extend(['-hwaccel', self.gpu_config['hwaccel']])
+            else:
+                result.append(base_cmd[i])
+            i += 1
+        
+        return result
+
+    def _get_gpu_output_args(self, quality='balanced'):
+        """Get GPU encoder arguments for output"""
+        if not self.gpu_config['has_nvidia'] and not self.gpu_config['has_amd'] and not self.gpu_config['has_intel']:
+            return ['-c:v', 'libx264', '-preset', 'faster', '-crf', '23']
+        
+        encoder_args = ['-c:v', self.gpu_config['encoder']]
+        
+        # Quality settings based on encoder
+        if self.gpu_config['has_nvidia']:
+            if quality == 'fast':
+                encoder_args.extend(['-preset', 'p1', '-tune', 'ull'])
+            elif quality == 'balanced':
+                encoder_args.extend(['-preset', 'p4', '-tune', 'hq'])
+            else:  # high quality
+                encoder_args.extend(['-preset', 'p7', '-tune', 'hq', '-rc', 'vbr'])
+            encoder_args.extend(['-b:v', '5M', '-maxrate', '8M', '-bufsize', '10M'])
+            
+        elif self.gpu_config['has_amd']:
+            encoder_args.extend(['-quality', 'balanced', '-rc', 'vbr_peak'])
+            encoder_args.extend(['-b:v', '5M', '-maxrate', '8M'])
+            
+        elif self.gpu_config['has_intel']:
+            encoder_args.extend(['-preset', 'balanced', '-global_quality', '23'])
+        
+        return encoder_args
+    
+    def _get_gpu_filter_args(self, video_filter):
+        """Optimize video filters for GPU when possible"""
+        if self.gpu_config['has_nvidia']:
+            # For NVIDIA, we can use GPU-accelerated scaling
+            if 'scale=' in video_filter:
+                # Replace scale with scale_cuda for better performance
+                video_filter = video_filter.replace('scale=', 'scale_cuda=')
+            return ['-vf', video_filter]
+        else:
+            return ['-vf', video_filter]
+
+    def cancel(self):
+        """Allow cancellation of the worker thread"""
+        self._is_cancelled = True
+        self.quit()
+
+    def _check_cancelled(self):
+        """Check if operation was cancelled"""
+        if self._is_cancelled:
+            raise Exception("Operation cancelled by user")
+
+    def _log_step_time(self, step_name, start_time):
+        """Log the time taken for a specific step"""
+        step_duration = time.time() - start_time
+        self.step_times[step_name] = step_duration
+        self.logger.info(f"⏱️ {step_name} completed in {step_duration:.2f} seconds")
+
+    def _format_duration(self, seconds):
+        """Format duration in a human-readable format"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        
+        if hours > 0:
+            return f"{hours}h {minutes}m {secs:.1f}s"
+        elif minutes > 0:
+            return f"{minutes}m {secs:.1f}s"
+        else:
+            return f"{secs:.1f}s"
+
+    def _log_runtime_summary(self):
+        """Log a comprehensive summary of runtime statistics"""
+        total_runtime = time.time() - self.start_time
+        
+        self.logger.info("=" * 60)
+        self.logger.info("🎬 VIDEO GENERATION RUNTIME SUMMARY")
+        self.logger.info("=" * 60)
+        
+        # GPU info
+        if self.gpu_config['has_nvidia'] or self.gpu_config['has_amd'] or self.gpu_config['has_intel']:
+            encoder_type = "NVIDIA NVENC" if self.gpu_config['has_nvidia'] else \
+                          "AMD AMF" if self.gpu_config['has_amd'] else "Intel QuickSync"
+            self.logger.info(f"🎮 GPU Acceleration: {encoder_type} ({self.gpu_config['encoder']})")
+        else:
+            self.logger.info("🖥️ Encoding: CPU (libx264)")
+        
+        # Total runtime
+        self.logger.info(f"📊 TOTAL RUNTIME: {self._format_duration(total_runtime)}")
+        self.logger.info("-" * 40)
+        
+        # Individual step times
+        self.logger.info("📋 STEP-BY-STEP BREAKDOWN:")
+        step_order = [
+            "Initialization",
+            "Script Generation", 
+            "Thumbnail Generation",
+            "Image Generation",
+            "Audio Generation", 
+            "Video Assembly"
+        ]
+        
+        for step in step_order:
+            if step in self.step_times:
+                duration = self.step_times[step]
+                percentage = (duration / total_runtime) * 100
+                self.logger.info(f"   {step}: {self._format_duration(duration)} ({percentage:.1f}%)")
+        
+        self.logger.info("-" * 40)
+        
+        # Performance metrics
+        if "Script Generation" in self.step_times:
+            scripts_per_sec = (1 + self.loop_length + 1) / self.step_times["Script Generation"]
+            self.logger.info(f"📝 Script generation rate: {scripts_per_sec:.2f} scripts/second")
+            
+        if "Image Generation" in self.step_times:
+            images_per_sec = self.image_count / self.step_times["Image Generation"]
+            self.logger.info(f"🖼️  Image generation rate: {images_per_sec:.2f} images/second")
+            
+        if "Audio Generation" in self.step_times:
+            estimated_chunks = len(split_text_into_chunks("dummy text " * 100, -1, self.word_limit))
+            audio_per_sec = estimated_chunks / self.step_times["Audio Generation"]
+            self.logger.info(f"🎵 Audio generation rate: {audio_per_sec:.2f} clips/second")
+        
+        self.logger.info("-" * 40)
+        self.logger.info(f"🎯 Video Title: {self.video_title}")
+        self.logger.info(f"📅 Completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info("=" * 60)
+
+    def _safe_api_call(self, func, *args, max_retries=3, **kwargs):
+        """Wrapper for API calls with retry logic and timeout"""
+        for attempt in range(max_retries):
+            try:
+                self._check_cancelled()
+                result = func(*args, **kwargs)
+                # Force garbage collection after heavy operations
+                gc.collect()
+                return result
+            except requests.exceptions.Timeout:
+                self.logger.warning(f"API call timeout, attempt {attempt + 1}/{max_retries}")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
+            except requests.exceptions.RequestException as e:
+                self.logger.warning(f"API call failed, attempt {attempt + 1}/{max_retries}: {e}")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
+            except Exception as e:
+                self.logger.error(f"Unexpected error in API call: {e}")
+                raise
+
+    def _safe_subprocess_run(self, cmd, timeout=300, **kwargs):
+        """Wrapper for subprocess calls with timeout and error handling"""
+        try:
+            self._check_cancelled()
+            self.logger.info(f"Running command: {' '.join(cmd[:3])}...")
+            
+            # Set default kwargs for subprocess
+            subprocess_kwargs = {
+                'check': True,
+                'timeout': timeout,
+                'stdout': subprocess.PIPE,
+                'stderr': subprocess.PIPE,
+                'text': True
+            }
+            subprocess_kwargs.update(kwargs)
+            
+            result = subprocess.run(cmd, **subprocess_kwargs)
+            return result
+            
+        except subprocess.TimeoutExpired:
+            self.logger.error(f"Command timed out after {timeout}s")
+            raise Exception(f"FFmpeg operation timed out after {timeout} seconds")
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Command failed with exit code {e.returncode}")
+            self.logger.error(f"stderr: {e.stderr}")
+            raise Exception(f"FFmpeg operation failed: {e.stderr}")
+        
+    def _generate_single_audio(self, audio_task):
+        """Generate a single audio file - thread-safe function"""
+        idx, audio_chunk, output_dir = audio_task
+        
+        try:
+            self._check_cancelled()
+            
+            data = {
+                'text': audio_chunk,
+                'voice': "am_michael",
+                'speed': 1,
+                'language': "a"
+            }
+            
+            result = self._safe_requests_call("http://localhost:8000/tts/base64", data, timeout=180)
+            
+            if 'audio_base64' not in result:
+                raise Exception("No audio data in TTS response")
+                
+            audio_data = base64.b64decode(result['audio_base64'])
+            
+            # Save to file with correct naming
+            filename = os.path.join(output_dir, f"audio{idx+1}.wav")
+            with open(filename, 'wb') as f:
+                f.write(audio_data)
+            
+            # Thread-safe progress update
+            with self.audio_progress_lock:
+                self.completed_audio_count += 1
+                progress = int(45 + (self.completed_audio_count / len(audio_chunks)) * 20)
+                self.progress_update.emit(progress)
+            
+            self.logger.info(f"🎵 Generated audio {idx + 1} for chunk (parallel)")
+            
+            # Clear audio data and force garbage collection
+            del audio_data
+            gc.collect()
+            
+            return idx, True, None
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate audio {idx + 1}: {e}")
+            return idx, False, str(e)
+
+    def _generate_audio_parallel(self, audio_chunks, output_dir, max_workers=4):
+        """Generate audio files in parallel with up to 4 concurrent threads"""
+        self.logger.info(f"🎵 Starting parallel audio generation with {max_workers} workers")
+        
+        # Reset progress tracking
+        with self.audio_progress_lock:
+            self.completed_audio_count = 0
+        
+        # Create list of tasks (index, chunk, output_dir)
+        audio_tasks = [(idx, chunk, output_dir) for idx, chunk in enumerate(audio_chunks)]
+        
+        # Track results to ensure all files are generated
+        results = {}
+        failed_tasks = []
+        
+        # Use ThreadPoolExecutor for parallel processing
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
-            for idx, chunk in enumerate(chunks):
-                prompt = images_prompt.replace('$intro', script_base).replace('$chunk', chunk)
-                future = executor.submit(
-                    self.generate_chunk_image, openai_helper, prompt, output_dir, idx)
-                futures.append(future)
-
-            # Process completed tasks and update progress
-            for future in as_completed(futures):
+            future_to_task = {
+                executor.submit(self._generate_single_audio, task): task 
+                for task in audio_tasks
+            }
+            
+            # Process completed tasks as they finish
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                idx = task[0]
+                
                 try:
-                    # Update progress on the main thread using QTimer
-                    QTimer.singleShot(0, self.update_image_progress)
+                    result_idx, success, error = future.result()
+                    results[result_idx] = success
+                    
+                    if not success:
+                        failed_tasks.append((result_idx, error))
+                        
                 except Exception as e:
-                    self.logger.error(f"Task failed with exception: {e}")
+                    self.logger.error(f"Audio generation task {idx + 1} failed: {e}")
+                    failed_tasks.append((idx, str(e)))
+                    results[idx] = False
+        
+        # Check if all audio files were generated successfully
+        if failed_tasks:
+            failed_indices = [str(idx + 1) for idx, _ in failed_tasks]
+            raise Exception(f"Failed to generate audio files: {', '.join(failed_indices)}")
+        
+        # Verify all files exist with correct naming
+        missing_files = []
+        for idx in range(len(audio_chunks)):
+            filename = os.path.join(output_dir, f"audio{idx+1}.wav")
+            if not os.path.exists(filename):
+                missing_files.append(f"audio{idx+1}.wav")
+        
+        if missing_files:
+            raise Exception(f"Missing audio files after generation: {', '.join(missing_files)}")
+        
+        self.logger.info(f"✅ Successfully generated {len(audio_chunks)} audio files in parallel")
+        return True
+
+    def _safe_requests_call(self, url, data=None, timeout=300, max_retries=3):
+        """Safe wrapper for requests with proper session management"""
+        session = None
+        try:
+            for attempt in range(max_retries):
+                try:
+                    self._check_cancelled()
+                    
+                    # Create new session for each attempt
+                    session = requests.Session()
+                    session.headers.update({
+                        'Connection': 'close',
+                        'Content-Type': 'application/json'
+                    })
+                    
+                    response = session.post(url, json=data, timeout=timeout)
+                    response.raise_for_status()
+                    
+                    result = response.json()
+                    return result
+                    
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    self.logger.warning(f"Request failed, attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt == max_retries - 1:
+                        raise
+                    time.sleep(2 ** attempt)
+                finally:
+                    if session:
+                        session.close()
+                        
+        except Exception as e:
+            self.logger.error(f"Request failed after {max_retries} attempts: {e}")
+            raise
+        finally:
+            if session:
+                session.close()
 
     def run(self):
+        # Start timing the entire process
+        self.start_time = time.time()
+        self.logger.info(f"🚀 Starting video generation at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
         temp_folder_path = "__temp__"
+        output_dir = None
+        
         try:
             # 1. Initialize for video generation
+            step_start = time.time()
             self.logger.info(f"Step 1/6: Initializing")
             self.operation_update.emit("Initializing")
             output_dir = create_output_directory(self.video_title)
 
             # Check if folder exists
             if not os.path.exists(temp_folder_path):
-                os.mkdir(temp_folder_path)
-                print(f"Folder '{temp_folder_path}' created successfully")
+                os.makedirs(temp_folder_path, exist_ok=True)
+                self.logger.info(f"Folder '{temp_folder_path}' created successfully")
             else:
-                print(f"Folder '{temp_folder_path}' already exists")
+                self.logger.info(f"Folder '{temp_folder_path}' already exists")
 
             # Initialize OpenAI helper
             openai_helper = OpenAIHelper(self.api_key)
-
             self.progress_update.emit(5)
+            self._log_step_time("Initialization", step_start)
 
             # 2. Generating the scripts
+            step_start = time.time()
             self.logger.info(f"Step 2/6: Generating Scripts")
             self.operation_update.emit("Generating Scripts")
-            prev_id = ""
-
-            looping_script = ""
+            
+            # Generate intro script with error handling
             self.logger.info(f"Generating intro scripts....")
-            (intro_script, prev_id) = openai_helper.generate_text(
-                prompt=self.intro_prompt)
-            
-            if intro_script is None:
-                self.logger.info("Failed to generate the intro scripts! Stopped the video generation")
-                self.logger.error(prev_id)
-                raise Exception(prev_id)
-                
-            self.logger.info(f"Intro script is generated successfully!")
-            self.progress_update.emit(6)
-            
-            for idx in range(1, self.loop_length + 1):
-                self.logger.info(
-                    f"Generating looping scripts({idx}/{self.loop_length})....")
-                (script, prev_id) = openai_helper.generate_text(
-                    prompt=self.looping_prompt, prev_id=prev_id)
-                looping_script += script + '\n\n'
-                self.logger.info(
-                    f"Looping script({idx}/{self.loop_length}) is generated successfully!")
+            try:
+                (intro_script, prev_id) = self._safe_api_call(
+                    openai_helper.generate_text,
+                    prompt=self.intro_prompt
+                )
                 
                 if intro_script is None:
-                    self.logger.info(f"Failed to generate the {idx}/{self.loop_length} looping script! Stopped the video generation")
-                    self.logger.error(prev_id)
-                    return
+                    raise Exception(f"Failed to generate intro script: {prev_id}")
+                    
+                self.logger.info(f"Intro script generated successfully!")
+                self.progress_update.emit(6)
                 
-                self.progress_update.emit(int(6 + idx / self.loop_length * 3))
+            except Exception as e:
+                self.logger.error(f"Failed to generate intro script: {e}")
+                raise
 
+            # Generate looping scripts
+            looping_script = ""
+            for idx in range(1, self.loop_length + 1):
+                self._check_cancelled()
+                
+                self.logger.info(f"Generating looping scripts({idx}/{self.loop_length})....")
+                try:
+                    (script, prev_id) = self._safe_api_call(
+                        openai_helper.generate_text,
+                        prompt=self.looping_prompt, 
+                        prev_id=prev_id
+                    )
+                    
+                    if script is None:
+                        raise Exception(f"Failed to generate looping script {idx}: {prev_id}")
+                        
+                    looping_script += script + '\n\n'
+                    self.logger.info(f"Looping script({idx}/{self.loop_length}) generated successfully!")
+                    self.progress_update.emit(int(6 + idx / self.loop_length * 3))
+                    
+                    # Small delay to prevent overwhelming the API
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to generate looping script {idx}: {e}")
+                    raise
+
+            # Generate outro script
             self.logger.info(f"Generating outro scripts....")
-            (outro_script, prev_id) = openai_helper.generate_text(
-                prompt=self.outro_prompt,
-                prev_id=prev_id)
-            
-            if intro_script is None:
-                self.logger.info("Failed to generate the outro scripts! Stopped the video generation")
-                self.logger.error(prev_id)
-                return
-            
-            self.logger.info(f"Outro script is generated successfully!")
-            self.progress_update.emit(10)
+            try:
+                (outro_script, prev_id) = self._safe_api_call(
+                    openai_helper.generate_text,
+                    prompt=self.outro_prompt,
+                    prev_id=prev_id
+                )
+                
+                if outro_script is None:
+                    raise Exception(f"Failed to generate outro script: {prev_id}")
+                    
+                self.logger.info(f"Outro script generated successfully!")
+                self.progress_update.emit(10)
+                
+            except Exception as e:
+                self.logger.error(f"Failed to generate outro script: {e}")
+                raise
 
             total_script = intro_script + '\n\n' + looping_script + '\n\n' + outro_script
-
             total_script = sanitize_for_script(total_script)
             intro_script = sanitize_for_script(intro_script)
 
@@ -202,71 +578,207 @@ class GenerationWorker(QThread):
             with open(os.path.join(output_dir, 'script.txt'), 'w', encoding='utf-8') as file:
                 file.write(total_script)
 
+            # Force garbage collection after script generation
+            gc.collect()
+            self._log_step_time("Script Generation", step_start)
+
             # 3. Generate the thumbnail Image
+            step_start = time.time()
             self.logger.info(f"Step 3/6: Generating Thumbnail")
             self.operation_update.emit("Generating Thumbnail")
 
-            self.thumbnail_prompt = self.thumbnail_prompt.replace(
-                "$intro", intro_script)
+            try:
+                data = {
+                    "prompt": self.thumbnail_prompt,
+                    "workflow": self.comfy_workflow,
+                    "width": 1280,
+                    "height": 720,
+                    "format": "base64"
+                }
+                
+                result = self._safe_requests_call("http://localhost:5000/generate", data, timeout=300)
+                images = result.get('images', {})
+                
+                # Get the first image from the first node
+                image_data = None
+                for node_id, node_images in images.items():
+                    if node_images:
+                        image_data = node_images[0]
+                        break
+                        
+                if not image_data:
+                    raise Exception("No image data found in response")
+                
+                with open(os.path.join(output_dir, 'thumbnail.jpg'), 'wb') as f:
+                    f.write(base64.b64decode(image_data))
 
-            img_data = openai_helper.generate_image(
-                prompt=self.thumbnail_prompt,
-                quality='low',
-                size="landscape",
-            )
-            save_image_base64(
-                image_data=img_data,
-                output_file=os.path.join(output_dir, "thumbnail.jpg"),
-                width=1280,
-                height=720
-            )
-            self.logger.info(f"Thumbnail image is generated successfully!")
-            self.progress_update.emit(25)
+                self.logger.info(f"Thumbnail image generated successfully!")
+                self.progress_update.emit(25)
+                
+                # Clear image data from memory
+                del image_data
+                gc.collect()
+                
+            except Exception as e:
+                self.logger.error(f"Failed to generate thumbnail: {e}")
+                raise
+            
+            self._log_step_time("Thumbnail Generation", step_start)
 
             # 4. Generate the images based on the script
+            step_start = time.time()
             self.logger.info(f"Step 4/6: Generating Images")
             self.operation_update.emit("Generating Images")
+            
             image_chunks = split_text_into_chunks(
                 total_script,
                 chunks_count=self.image_count,
                 word_limit=self.image_word_limit
             )
 
-            self.generate_images(openai_helper, image_chunks, self.images_prompt,
-                                 output_dir, intro_script)
+            for idx, chunk in enumerate(image_chunks):
+                self._check_cancelled()
+                
+                try:
+                    chunk_prompt = self.images_prompt.replace('$chunk', chunk)
+                    with open(os.path.join(output_dir, f"image{idx + 1}-prompt.txt"), 'w') as f:
+                        f.write(chunk_prompt)
+                    
+                    data = {
+                        "prompt": chunk_prompt,
+                        "workflow": self.comfy_workflow,
+                        "width": 1920,
+                        "height": 1080,
+                        "format": "base64"
+                    }
+                    
+                    result = self._safe_requests_call("http://localhost:5000/generate", data, timeout=300)
+                    images = result.get('images', {})
+                    
+                    # Get the first image from the first node
+                    image_data = None
+                    for node_id, node_images in images.items():
+                        if node_images:
+                            image_data = node_images[0]
+                            break
+                            
+                    if not image_data:
+                        raise Exception("No image data found in response")
+                    
+                    # FIX: Save to correct filename (was saving to thumbnail.jpg)
+                    with open(os.path.join(output_dir, f'image{idx + 1}.jpg'), 'wb') as f:
+                        f.write(base64.b64decode(image_data))
+                    
+                    progress = 25 + ((idx + 1) / len(image_chunks) * 20)
+                    self.progress_update.emit(int(progress))
+                    self.logger.info(f"Generated image {idx + 1}/{len(image_chunks)}!")
+                    
+                    # Clear image data and force garbage collection
+                    del image_data
+                    gc.collect()
+                    
+                    # Small delay between image generations
+                    time.sleep(1)
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to generate image {idx + 1}: {e}")
+                    raise
+
+            self._log_step_time("Image Generation", step_start)
 
             # 5. Generate Audios
+            step_start = time.time()
             self.logger.info(f"Step 5/6: Generating Audios")
             self.operation_update.emit("Generating Audios")
+            
             audio_chunks = split_text_into_chunks(
                 total_script,
                 chunks_count=-1,
                 word_limit=self.word_limit
             )
 
-            self.generate_audios(openai_helper, audio_chunks, output_dir)
+            for idx, audio_chunk in enumerate(audio_chunks):                
+                try:
+                    data = {
+                        'text': audio_chunk,
+                        'voice': "am_michael",
+                        'speed': 1,
+                        'language': "a"
+                    }
+                    
+                    result = self._safe_requests_call("http://localhost:8000/tts/base64", data, timeout=180)
+                    
+                    if 'audio_base64' not in result:
+                        raise Exception("No audio data in TTS response")
+                        
+                    audio_data = base64.b64decode(result['audio_base64'])
+                    
+                    # Save to file
+                    filename = os.path.join(output_dir, f"audio{idx+1}.wav")
+                    with open(filename, 'wb') as f:
+                        f.write(audio_data)
+                        
+                    self.logger.info(f"Generated audio {idx + 1}/{len(audio_chunks)} for chunk...")
+                    self.progress_update.emit(int(45 + (idx + 1) / len(audio_chunks) * 20))
+                    
+                    # Clear audio data and force garbage collection
+                    del audio_data
+                    gc.collect()
+                    
+                    # Small delay between audio generations
+                    # time.sleep(0.5)
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to generate audio {idx + 1}: {e}")
+                    raise
+
+            self._log_step_time("Audio Generation", step_start)
 
             # 6. Make video
+            step_start = time.time()
             self.logger.info(f"Step 6/6: Generating Video")
             self.operation_update.emit("Generating Video")
 
             # === Step 1: Merge audio files ===
             audio_list_file = os.path.join(temp_folder_path, 'audios.txt')
-            # num_audios = 9
-            num_audios = len(audio_chunks)
+            
+            # num_audios = len(audio_chunks)
+            num_audios = 11 
+
+            # Create list file for WAV files
             with open(audio_list_file, 'w') as f:
                 for i in range(1, num_audios + 1):
-                    path = os.path.abspath(os.path.join(output_dir, f"audio{i}.mp3"))
-                    f.write(
-                        f"file '{path}'\n")
+                    path = os.path.abspath(os.path.join(output_dir, f"audio{i}.wav"))
+                    f.write(f"file '{path}'\n")
 
-            merged_audio = os.path.join(temp_folder_path, 'merged_audio.mp3')
-            cmd_concat_audio = [
+            merged_audio = os.path.join(temp_folder_path, 'merged_audio.wav')
+
+            # Merge WAV files - using GPU-optimized command
+            cmd_concat_audio = self._get_gpu_encode_args([
                 'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
-                '-i', audio_list_file, '-c', 'copy', merged_audio
+                '-i', audio_list_file, 
+                '-c', 'copy',
+                merged_audio
+            ])
+
+            self.logger.info("🎵 Merging WAV audio files...")
+            self._safe_subprocess_run(cmd_concat_audio, timeout=180)
+
+            # Convert merged WAV to MP3 with GPU optimization
+            merged_audio_mp3 = os.path.join(temp_folder_path, 'merged_audio.mp3')
+            cmd_wav_to_mp3 = [
+                'ffmpeg', '-y', '-i', merged_audio,
+                '-c:a', 'libmp3lame',
+                '-b:a', '128k',
+                '-ar', '44100',
+                merged_audio_mp3
             ]
-            self.logger.info("🎵 Merging audio files...")
-            subprocess.run(cmd_concat_audio, check=True)
+
+            self.logger.info("🎵 Converting merged audio to MP3...")
+            self._safe_subprocess_run(cmd_wav_to_mp3, timeout=120)
+
+            # Update merged_audio path to use MP3 version for final video
+            merged_audio = merged_audio_mp3
 
             # Get total audio duration
             def get_duration(file):
@@ -274,17 +786,14 @@ class GenerationWorker(QThread):
                     'ffprobe', '-v', 'error', '-show_entries',
                     'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file
                 ]
-                result = subprocess.run(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                result = self._safe_subprocess_run(cmd, timeout=30)
                 return float(result.stdout.strip())
 
             audio_duration = get_duration(merged_audio)
-            particle_duration = get_duration(
-                os.path.join("./reference", "particles.webm"))
+            particle_duration = get_duration(os.path.join("./reference", "particles.webm"))
             self.logger.info(f"⏱ Total audio duration: {audio_duration:.2f}s")
 
             particle_loops = math.ceil(audio_duration / particle_duration)
-            print(particle_loops)
             self.progress_update.emit(65)
 
             # === Parameters ===
@@ -292,126 +801,195 @@ class GenerationWorker(QThread):
             zoom_duration = 4  # seconds per image (except last)
             output_size = '1920x1080'
 
-            # === Step 2: Create zoomed clips ===
+            # === Step 2: Create zoomed clips with GPU acceleration ===
             zoom_clips = []
-            # num_images = 3
-            num_images = len(image_chunks)
+            num_images = 3
+            # num_images = len(image_chunks)
+            
             for idx in range(1, num_images + 1):
+                self._check_cancelled()
+                
                 img = os.path.join(output_dir, f"image{idx}.jpg")
                 out_clip = os.path.join(temp_folder_path, f'zoom{idx}.mp4')
                 zoom_clips.append(os.path.abspath(out_clip))
 
                 speed = 0.001
                 zoom_directions = [
-                    # Center zoom
                     f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':d=120:fps=30,scale=1920:1080",
-                    # Left->Right, Top->Bottom zoom
                     f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='0':d=120:fps=30,scale=1920:1080",
-                    # Right->Left, Top->Bottom zoom
                     f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='0':d=120:fps=30,scale=1920:1080",
-                    # Left->Right, Bottom->Top zoom
                     f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='trunc(ih-(ih/zoom))':d=120:fps=30,scale=1920:1080",
-                    # Right->Left, Bottom->Top zoom
                     f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='trunc(ih-(ih/zoom))':d=120:fps=30,scale=1920:1080",
                 ]
 
                 zoom_filter = random.choice(zoom_directions)
 
-                if idx < num_images:
-                    duration = zoom_duration
-                    cmd = [
-                        'ffmpeg', '-y', '-loop', '1', '-i', img,
-                        '-preset', 'superfast',
-                        '-threads', '4',
-                        '-vf', zoom_filter,
-                        '-s', output_size,
-                        '-t', str(duration), '-pix_fmt', 'yuv420p', out_clip
-                    ]
-                    self.logger.info(
-                        f"🎥 Creating zoom clip for {img} (duration: {duration:.2f}s)")
-                    subprocess.run(cmd, check=True)
-                else:
-                    # Apply particle effect to the last image
-                    particle_effect = os.path.join(
-                        temp_folder_path, 'last_with_particles.mp4')
-                    extended_particle_effect = os.path.join(
-                        temp_folder_path, 'extended_last_with_particles.mp4')
+                try:
+                    if idx < num_images:
+                        duration = zoom_duration
 
-                    # Combine image with particle effect
-                    cmd_particle = [
-                        'ffmpeg', '-loop', '1', '-i', img, '-i', os.path.join(
-                            "reference", 'particles.webm'),
-                        '-filter_complex', "[0:v]scale=1920:1080,setsar=1[bg];"
-                        "[1:v]scale=1920:1080,format=rgba,colorchannelmixer=aa=0.3[particles];"
-                        "[bg][particles]overlay=format=auto",
-                        '-shortest', '-pix_fmt', 'yuv420p',
-                        '-s', output_size,
-                        "-y", particle_effect
-                    ]
-                    self.logger.info(f"✨ Applying particle effect to {img}")
-                    subprocess.run(cmd_particle, check=True)
+                        # Construct command properly with GPU acceleration
+                        base_cmd = ['ffmpeg', '-y']
+                        
+                        # Add hardware acceleration if available (must come before inputs)
+                        if self.gpu_config['hwaccel']:
+                            base_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
+                        
+                        # Add input
+                        base_cmd.extend(['-loop', '1', '-i', img])
+                        
+                        # Add output encoding options
+                        base_cmd.extend(self._get_gpu_output_args(quality='fast'))
+                        
+                        # Add filters and output options
+                        base_cmd.extend([
+                            '-vf', zoom_filter,
+                            '-s', output_size,
+                            '-t', str(duration), 
+                            '-pix_fmt', 'yuv420p', 
+                            out_clip
+                        ])
+                        
+                        self.logger.info(f"🎥 Creating GPU-accelerated zoom clip for {img} (duration: {duration:.2f}s)")
+                        self._safe_subprocess_run(base_cmd, timeout=120)
 
-                    # Extend the particle effect video to match the remaining audio duration
-                    cmd_extend = [
-                        'ffmpeg', '-stream_loop', f'{str(particle_loops)}', '-i', particle_effect,
-                        '-c', 'copy', extended_particle_effect
-                    ]
-                    self.logger.info(
-                        f"🔄 Extending particle effect video duration")
-                    subprocess.run(cmd_extend, check=True)
+                    else:
+                        # Apply particle effect to the last image with GPU acceleration
+                        particle_effect = os.path.join(temp_folder_path, 'last_with_particles.mp4')
+                        extended_particle_effect = os.path.join(temp_folder_path, 'extended_last_with_particles.mp4')
 
-                    zoom_clips[-1] = os.path.abspath(extended_particle_effect)
+                        # GPU-optimized particle effect combination
+                        base_cmd = ['ffmpeg']
 
-                self.progress_update.emit(65 + idx / num_images * 30)
+                        # Add hardware acceleration if available
+                        if self.gpu_config['hwaccel']:
+                            base_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
 
-            # === Step 3: Concatenate video clips ===
+                        base_cmd.extend(['-loop', '1', '-i', img, '-i', os.path.join("reference", 'particles.webm')])
+
+                        cmd_particle = base_cmd + self._get_gpu_output_args(quality='balanced') + [
+                            '-filter_complex', "[0:v]scale=1920:1080,setsar=1[bg];"
+                            "[1:v]scale=1920:1080,format=rgba,colorchannelmixer=aa=0.3[particles];"
+                            "[bg][particles]overlay=format=auto",
+                            '-shortest', '-pix_fmt', 'yuv420p',
+                            '-s', output_size, particle_effect
+                        ]
+                                                
+                        self.logger.info(f"✨ Applying GPU-accelerated particle effect to {img}")
+                        self._safe_subprocess_run(cmd_particle, timeout=180)
+
+                        # Extend the particle effect video with GPU optimization
+                        base_extend_cmd = ['ffmpeg']
+                        if self.gpu_config['hwaccel']:
+                            base_extend_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
+
+                        base_extend_cmd.extend(['-stream_loop', f'{str(particle_loops)}', '-i', particle_effect])
+
+                        cmd_extend = base_extend_cmd + ['-c:v', 'copy', extended_particle_effect]
+                        
+                        self.logger.info(f"🔄 Extending particle effect video duration with GPU")
+                        self._safe_subprocess_run(cmd_extend, timeout=120)
+
+                        zoom_clips[-1] = os.path.abspath(extended_particle_effect)
+
+                    self.progress_update.emit(int(65 + idx / num_images * 25))
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to create video clip {idx}: {e}")
+                    raise
+
+            # === Step 3: Concatenate video clips with GPU acceleration ===
             ts_clips = []
             for clip in zoom_clips:
+                self._check_cancelled()
+                
                 ts_path = clip.replace(".mp4", ".ts")
-                subprocess.run([
-                    "ffmpeg", "-y", "-i", clip,
-                    "-c", "copy", "-bsf:v", "h264_mp4toannexb",
+                
+                # GPU-optimized TS conversion
+                base_cmd = ["ffmpeg", "-y"]
+                if self.gpu_config['hwaccel']:
+                    base_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
+
+                base_cmd.extend(["-i", clip])
+
+                cmd = base_cmd + [
+                    "-c:v", "copy", "-bsf:v", "h264_mp4toannexb",
                     "-f", "mpegts", ts_path
-                ], check=True)
+                ]
+                
+                self._safe_subprocess_run(cmd, timeout=120)
                 ts_clips.append(ts_path)
 
             full_video = os.path.join(temp_folder_path, 'slideshow.mp4')
             concat_input = '|'.join(ts_clips)
-            cmd_concat_video = [
-                "ffmpeg", "-y", "-i", f"concat:{concat_input}",
-                "-c", "copy", "-bsf:a", "aac_adtstoasc", full_video
+            
+            # GPU-optimized video concatenation
+            base_concat_cmd = ["ffmpeg", "-y"]
+            if self.gpu_config['hwaccel']:
+                base_concat_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
+
+            base_concat_cmd.extend(["-i", f"concat:{concat_input}"])
+
+            cmd_concat_video = base_concat_cmd + [
+                "-c:v", "copy", "-bsf:a", "aac_adtstoasc", full_video
             ]
-            subprocess.run(cmd_concat_video, check=True)
+            
+            self.logger.info("🔗 GPU-accelerated video concatenation...")
+            self._safe_subprocess_run(cmd_concat_video, timeout=300)
 
-            # === Step 4: Combine the video and audio ===
-            cmd_final = [
-                'ffmpeg', '-y', '-i', full_video, '-i', merged_audio,
-                '-c:v', 'copy', '-c:a', 'aac', '-shortest', os.path.join(
-                    output_dir, output_video)
+            # === Step 4: Combine the video and audio with GPU acceleration ===
+            base_final_cmd = ['ffmpeg', '-y']
+            if self.gpu_config['hwaccel']:
+                base_final_cmd.extend(['-hwaccel', self.gpu_config['hwaccel']])
+
+            base_final_cmd.extend(['-i', full_video, '-i', merged_audio])
+
+            cmd_final = base_final_cmd + self._get_gpu_output_args(quality='fast') + [
+                '-c:a', 'aac', '-shortest', 
+                os.path.join(output_dir, output_video)
             ]
-            # cmd_final = [
-            #     'ffmpeg', '-y', '-i', full_video, '-i', merged_audio,
-            #     '-c:v', 'libx264', '-preset', 'fast', '-pix_fmt', 'yuv420p',
-            #     '-c:a', 'aac', '-b:a', '192k',
-            #     '-shortest', os.path.join(output_dir, output_video)
-            # ]
-            self.logger.info(
-                f"🔗 Combining video and audio into {output_video}...")
-            subprocess.run(cmd_final, check=True)
+            
+            self.logger.info(f"🔗 GPU-accelerated final video assembly: {output_video}...")
+            self._safe_subprocess_run(cmd_final, timeout=600)
 
-            print("✅ Final video with audio created successfully!")
+            self.logger.info("✅ GPU-accelerated final video with audio created successfully!")
             self.progress_update.emit(100)
+            self._log_step_time("Video Assembly", step_start)
 
-            # Final progress
-            shutil.rmtree(temp_folder_path)
-            self.progress_update.emit(100)
+            # Log comprehensive runtime summary
+            self._log_runtime_summary()
+
+            # Final cleanup
+            if os.path.exists(temp_folder_path):
+                shutil.rmtree(temp_folder_path)
+                
             self.operation_update.emit("Completed")
 
         except Exception as e:
-            self.logger.error(f"Error during generation: {e}")
+            # Log error with runtime info
+            if self.start_time:
+                error_runtime = time.time() - self.start_time
+                self.logger.error(f"❌ Video generation failed after {self._format_duration(error_runtime)}: {e}")
+            else:
+                self.logger.error(f"❌ Video generation failed: {e}")
+                
             self.operation_update.emit(f"Error: {str(e)}")
+            self.error_occurred.emit(str(e))
             traceback.print_exc()
+            
+            # Cleanup on error
+            try:
+                if os.path.exists(temp_folder_path):
+                    shutil.rmtree(temp_folder_path)
+            except:
+                pass
 
         finally:
-            description = get_first_paragraph(intro_script)
-            self.finished.emit(description)
+            try:
+                if 'intro_script' in locals():
+                    description = get_first_paragraph(intro_script)
+                    self.finished.emit(description)
+                else:
+                    self.finished.emit("Generation failed")
+            except:
+                self.finished.emit("Generation completed with errors")

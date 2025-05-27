@@ -18,14 +18,18 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from accounts import AccountManagerDialog, AccountManager  # Your account logic
 from uploader import UploadThread
 from variables import VariableDialog
-
+from PyQt5.QtCore import QThread, pyqtSlot, Q_ARG
+import queue, logging
 
 class VideoGeneratorApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.logger = log.setup_logger()
+        # Set up logging without UI callback initially
+        self.logger, _ = log.setup_logger()
+
         self.setup_style()
         self.init_ui()
+        self.setup_timer_based_logging()
 
     def setup_style(self):
         """Setup application style and color scheme"""
@@ -215,18 +219,115 @@ class VideoGeneratorApp(QMainWindow):
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
         splitter.setSizes([800, 400])  # Initial sizes
-
-        # Set up log handler to display logs in the log window
-        log_handler = log.LogHandler(self.update_log)
-        self.logger.addHandler(log_handler)
-
-        # Set up youtube credential
-        self.google_token_path = os.path.join(
-            current_directory, 'token.pickle')
-        self.client_secrets_file = None
-        self.credentials = None
-
-        self.logger.info("Application initialized and ready")
+    
+    def setup_timer_based_logging(self):
+        """Alternative approach using QTimer for even safer logging"""
+        from PyQt5.QtCore import QTimer
+        
+        # Create a timer to periodically check for log messages
+        self.log_timer = QTimer()
+        self.log_timer.timeout.connect(self.process_log_queue)
+        self.log_timer.start(100)  # Check every 100ms
+        
+        # Use a queue for log messages
+        import queue
+        self.log_message_queue = queue.Queue()
+        
+        # Create custom handler that uses the queue
+        class QueueLogHandler(logging.Handler):
+            def __init__(self, message_queue):
+                super().__init__()
+                self.message_queue = message_queue
+                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+                self.setFormatter(formatter)
+            
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    try:
+                        self.message_queue.put_nowait(msg)
+                    except queue.Full:
+                        pass  # Skip if queue is full
+                except Exception:
+                    pass
+        
+        # Add the queue handler to logger
+        self.queue_handler = QueueLogHandler(self.log_message_queue)
+        self.logger.addHandler(self.queue_handler)
+    
+    def process_log_queue(self):
+        """Process log messages from queue (called by timer)"""
+        messages_processed = 0
+        max_messages_per_update = 10  # Limit to prevent UI blocking
+        
+        try:
+            while messages_processed < max_messages_per_update:
+                try:
+                    message = self.log_message_queue.get_nowait()
+                    self.update_log(message)
+                    messages_processed += 1
+                except queue.Empty:
+                    break
+        except Exception:
+            pass  # Ignore errors in log processing
+    
+    def update_log(self, message):
+        """Thread-safe log update method"""
+        try:
+            # Make sure we're in the main thread
+            if QThread.currentThread() != QApplication.instance().thread():
+                # If not in main thread, use QMetaObject.invokeMethod for thread safety
+                from PyQt5.QtCore import QMetaObject, Qt
+                QMetaObject.invokeMethod(
+                    self, 
+                    "_update_log_ui", 
+                    Qt.QueuedConnection,
+                    Q_ARG(str, message)
+                )
+            else:
+                self._update_log_ui(message)
+        except Exception:
+            pass  # Ignore UI update errors
+    
+    @pyqtSlot(str)
+    def _update_log_ui(self, message):
+        """Actually update the UI (must be called from main thread)"""
+        try:
+            self.log_window.append(message)
+            
+            # Limit the number of lines in log window to prevent memory issues
+            max_lines = 1000
+            if self.log_window.document().lineCount() > max_lines:
+                cursor = self.log_window.textCursor()
+                cursor.movePosition(cursor.Start)
+                cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)  # Remove first 100 lines
+                cursor.removeSelectedText()
+            
+            # Auto-scroll to bottom
+            scrollbar = self.log_window.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+            
+        except Exception:
+            pass  # Ignore UI errors
+    
+    def closeEvent(self, event):
+        """Clean up when closing the application"""
+        try:
+            # Stop the timer if using timer-based logging
+            if hasattr(self, 'log_timer'):
+                self.log_timer.stop()
+            
+            # Clean up logging handlers
+            if hasattr(self, 'logger'):
+                handlers = self.logger.handlers[:]
+                for handler in handlers:
+                    handler.close()
+                    self.logger.removeHandler(handler)
+            
+        except Exception:
+            pass
+        
+        event.accept()
 
     def setup_general_tab(self):
         """Setup general tab with API key, video title, etc."""
@@ -394,6 +495,13 @@ class VideoGeneratorApp(QMainWindow):
         
         # Button to manage variables.
         manage_prompt_variables_layout = QHBoxLayout()
+
+        self.import_workflow_button = QPushButton("Import workflow")
+        self.import_workflow_button.clicked.connect(self.import_workflow_json)
+        self.import_workflow_button.setStyleSheet("padding: 8px;")
+
+        manage_prompt_variables_layout.addWidget(self.import_workflow_button)
+
         space = QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.manage_prompt_variables_button = QPushButton("Manage Variables")
         self.manage_prompt_variables_button.clicked.connect(self.open_variable_dialog)
@@ -762,6 +870,13 @@ class VideoGeneratorApp(QMainWindow):
                 self, "Error", f"Need to load Google client secret JSON file to upload video to YouTube!")
             return
 
+        if not hasattr(self, 'workflow_file') or not self.workflow_file:
+            self.logger.error(
+                "Need to load workflow json file to generate image.")
+            QMessageBox.critical(
+                self, "Error", f"Need to load workflow json file to generate image.")
+            return
+        
         video_title = video_title.replace(' ', '-')
         self.video_title = video_title
         thumbnail_prompt = thumbnail_prompt.replace('$title', video_title)
@@ -792,12 +907,13 @@ class VideoGeneratorApp(QMainWindow):
             intro_prompt, looping_prompt, outro_prompt,
             loop_length, word_limit,
             image_count, image_word_limit,
-            self.logger
+            self.workflow_file, self.logger
         )
 
         # Connect signals
         self.worker.progress_update.connect(self.update_progress)
         self.worker.operation_update.connect(self.update_operation)
+        self.worker.error_occurred.connect(self.logger.error)
         self.worker.finished.connect(self.generation_finished)
 
         # Disable UI elements
@@ -805,7 +921,6 @@ class VideoGeneratorApp(QMainWindow):
 
         # Start worker
         self.worker.start()
-        self.logger.info("Starting video generation process...")
 
     def update_progress(self, value):
         self.progress_bar.setValue(value)
@@ -817,6 +932,8 @@ class VideoGeneratorApp(QMainWindow):
         self.logger.info("Video generation completed")
         self.current_operation_label.setText("Generation completed")
         self.progress_bar.setValue(100)
+
+        return
         
         # Upload Progress Start
         if not self.credentials or not self.credentials.valid:
@@ -960,6 +1077,13 @@ class VideoGeneratorApp(QMainWindow):
             print(self.variables)
             self.logger.info(f"{count} variable{'s' if count > 1 else ''} defined")
 
+    def import_workflow_json(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, 'Open Workflow File', '', 'JSON Files (*.json)')
+        if file_name:
+            self.logger.info(f'Selected workflow file: {file_name}')
+            self.workflow_file = file_name
+
     def toggle_ui_elements(self, enabled):
         # Enable/disable all input widgets
         self.api_key_input.setEnabled(enabled)
@@ -979,6 +1103,7 @@ class VideoGeneratorApp(QMainWindow):
         self.generate_btn.setEnabled(enabled)
         self.load_youtube_credential_button.setEnabled(enabled)
         self.manage_prompt_variables_button.setEnabled(enabled)
+        self.import_workflow_button.setEnabled(enabled)
 
         # Update button appearance
         if not enabled:

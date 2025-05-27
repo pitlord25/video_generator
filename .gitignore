@@ -1,4 +1,6 @@
 .venv
+accounts.json
+*temp*
 build
 dist
 logs
@@ -8,3 +10,5 @@ __pycache__
 output
 token.pickle
 google_auth.json
+presets
+workflows

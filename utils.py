@@ -3,6 +3,7 @@ import os
 import logging
 import base64
 import io
+import random
 from typing import Literal, Dict, Any, Optional
 from openai import OpenAI
 from PIL import Image
@@ -210,10 +211,10 @@ def sanitize_for_script(text) -> str:
             .replace('\u2014', '-')        # em dash
             .replace('\u2026', '...')      # ellipsis
             .replace('\u00a0', ' ')        # non-breaking spaces
-            .replace('\\', '\\\\')         # escape backslashes
-            .replace('"', '\\"')           # escape double quotes
-            .replace('\r\n', '\\n')        # escape windows newlines
-            .replace('\n', '\\n')          # escape unix newlines
+            # .replace('\\', '\\\\')         # escape backslashes
+            # .replace('"', '\\"')           # escape double quotes
+            # .replace('\r\n', '\n')        # escape windows newlines
+            # .replace('\n', '\\n')          # escape unix newlines
             .replace('\t', ' ')            # remove tabs
             .strip()                       # trim
             )
@@ -256,7 +257,8 @@ def split_text_into_chunks(
         if len(current_words) + len(sentence_words) <= word_limit:
             current_words.extend(sentence_words)
         else:
-            chunks.append(" ".join(current_words))
+            if len(current_words) > 0:
+                chunks.append(" ".join(current_words))
             current_words = sentence_words
 
     # Add the last chunk if there are any words left
