@@ -1,5 +1,5 @@
 from PyQt5.QtCore import QThread, pyqtSignal
-from utils import OpenAIHelper, create_output_directory, sanitize_for_script, split_text_into_chunks, get_first_paragraph
+from utils import OpenAIHelper, create_output_directory, sanitize_for_script, split_text_into_chunks, get_first_paragraph, split_text_into_chunks_image
 from logging import Logger
 import os, shutil, subprocess, random, math, traceback, json, requests, base64
 import time
@@ -477,7 +477,7 @@ class GenerationWorker(QThread):
             self.logger.info(f"Step 4/6: Generating Images")
             self.operation_update.emit("Generating Images")
             
-            image_chunks = split_text_into_chunks(
+            image_chunks = split_text_into_chunks_image(
                 total_script,
                 chunks_count=self.image_count,
                 word_limit=self.image_word_limit

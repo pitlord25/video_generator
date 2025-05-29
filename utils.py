@@ -271,6 +271,59 @@ def split_text_into_chunks(
 
     return chunks[:chunks_count]
 
+def split_text_into_chunks_image(
+    text: str,
+    chunks_count,
+    word_limit=10,
+) -> list:
+    """
+    Split text into chunks based on sentences, respecting word limit per chunk.
+
+    Args:
+        text: Input text to be split
+        word_limit: Maximum number of words per chunk
+        chunks_count: Maximum number of chunks to return
+
+    Returns:
+        List of text chunks
+    """
+    import re
+
+    # Clean the text (similar to JavaScript version)
+    raw = text
+    cleaned = raw.replace("\\n", "\n")  # Convert literal \n into real newlines
+    cleaned = re.sub(r"\s+", " ", cleaned)  # Collapse multiple spaces/newlines
+    cleaned = cleaned.strip()
+
+    # Split into sentences
+    sentences = re.findall(r'[^\.!\?]+[\.!\?]+(?:\s|$)', cleaned) or []
+    
+    print(sentences)
+
+    chunks = []
+    current_words = []
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        sentence_words = sentence.split()
+        print(sentence_words)
+
+        if len(current_words) + len(sentence_words) <= word_limit:
+            current_words.extend(sentence_words)
+        else:
+            if len(current_words) > 0:
+                chunks.append(" ".join(current_words))
+            current_words = sentence_words
+
+    # Add the last chunk if there are any words left
+    if current_words:
+        chunks.append(" ".join(current_words))
+
+    # Limit the number of chunks returned
+    if chunks_count == -1:
+        return chunks
+
+    return chunks[:chunks_count]
 
 def get_first_paragraph(text):
     """Extract the first paragraph from a multiline text.
