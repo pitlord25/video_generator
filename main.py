@@ -746,7 +746,6 @@ class VideoGeneratorApp(QMainWindow):
         try:
             settings = {
                 "api_key": self.api_key_input.text(),
-                "video_title": self.video_title_input.text(),
                 "thumbnail_prompt": self.thumbnail_prompt_input.toPlainText(),
                 "images_prompt": self.images_prompt_input.toPlainText(),
                 "disclaimer": self.disclaimer_input.toPlainText(),
@@ -791,7 +790,6 @@ class VideoGeneratorApp(QMainWindow):
 
             # Apply settings to UI
             self.api_key_input.setText(settings.get("api_key", ""))
-            self.video_title_input.setText(settings.get("video_title", ""))
             self.thumbnail_prompt_input.setPlainText(
                 settings.get("thumbnail_prompt", ""))
             self.images_prompt_input.setPlainText(

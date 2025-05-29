@@ -722,8 +722,8 @@ class GenerationWorker(QThread):
             self._log_runtime_summary()
 
             # Final cleanup
-            # if os.path.exists(temp_folder_path):
-            #     shutil.rmtree(temp_folder_path)
+            if os.path.exists(temp_folder_path):
+                shutil.rmtree(temp_folder_path)
                 
             self.operation_update.emit("Completed")
 

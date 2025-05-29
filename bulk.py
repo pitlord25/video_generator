@@ -1,17 +1,27 @@
-import sys
 import os
+import sys
+current_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
+os.chdir(current_directory)
+
 import json
 import pandas as pd
+import log
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QTableWidget, QTableWidgetItem, 
                              QPushButton, QProgressBar, QTextEdit, QLabel,
                              QFileDialog, QMessageBox, QDialog, QFormLayout,
                              QLineEdit, QComboBox, QDialogButtonBox, QHeaderView,
-                             QSplitter, QFrame, QStyleFactory, QAbstractItemView)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
+                             QSplitter, QFrame, QStyleFactory, QAbstractItemView,
+                             QCheckBox, QDateTimeEdit)
+from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer, QDateTime, pyqtSlot, Q_ARG
 from PyQt5.QtGui import QPalette, QColor, QFont
-import time
+from accounts import AccountManager
+from worker import GenerationWorker
+from uploader import UploadThread
+import datetime
 import traceback
+import logging
+import queue
 
 
 class BulkGenerationWorker(QThread):
@@ -20,7 +30,7 @@ class BulkGenerationWorker(QThread):
     operation_update = pyqtSignal(str)
     finished = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
-    row_status_update = pyqtSignal(int, str, int)  # row, status, progress
+    row_status_update = pyqtSignal(int, str, str)  # row, status, progress
     
     def __init__(self, generation_data, main_window):
         super().__init__()
@@ -49,7 +59,7 @@ class BulkGenerationWorker(QThread):
             self.operation_update.emit("Starting bulk generation...")
             # Reset all row statuses and counters
             for i in range(len(self.generation_data)):
-                self.row_status_update.emit(i, "Ready", 0)
+                self.row_status_update.emit(i, "Ready", "0")
             
             self.successful_items = 0
             self.failed_items = 0
@@ -86,13 +96,13 @@ class BulkGenerationWorker(QThread):
         total_items = len(self.generation_data)
         
         # Update row status to validating
-        self.row_status_update.emit(self.current_item_index, "Validating", 0)
+        self.row_status_update.emit(self.current_item_index, "Validating", "0")
         
         # Validate current item
         self.operation_update.emit(f"Validating item {self.current_item_index + 1}/{total_items}")
         
         if not self.validate_item(current_item):
-            self.row_status_update.emit(self.current_item_index, "Error (Validation)", 0)
+            self.row_status_update.emit(self.current_item_index, "Error (Validation)", "0")
             error_msg = f"Item {self.current_item_index + 1}: Validation failed"
             self.error_messages.append(error_msg)
             self.operation_update.emit(error_msg)
@@ -104,7 +114,7 @@ class BulkGenerationWorker(QThread):
             return
         
         # Update row status to processing
-        self.row_status_update.emit(self.current_item_index, "Processing", 0)
+        self.row_status_update.emit(self.current_item_index, "Processing", "0")
         
         # Update progress for validation
         base_progress = int(self.current_item_index / total_items * 100)
@@ -113,13 +123,37 @@ class BulkGenerationWorker(QThread):
         # Start generation for current item
         self.operation_update.emit(f"Starting generation for item {self.current_item_index + 1}/{total_items}")
         
+        # Extract data from preset
+        with open(current_item['preset_path'], 'r') as f:
+            data = json.load(f)
+        
+        api_key = data['api_key']
+        video_title = current_item['video_title']
+        thumbnail_prompt = data['thumbnail_prompt']
+        images_prompt = data['images_prompt']
+        intro_prompt = data['intro_prompt']
+        looping_prompt = data['looping_prompt']
+        outro_prompt = data['outro_prompt']
+        loop_length = data['loop_length']
+        word_limit = data['audio_word_limit']
+        image_count = data['thumbnail_count']
+        image_word_limit = data['thumbnail_word_limit']
+        
+        workflow_file = current_item['workflow_path']
         # Create GenerationWorker for this item (you'll modify the parameters)
-        self.current_generation_worker = GenerationWorker(current_item)  # Modify parameters as needed
+        self.current_generation_worker = self.worker = GenerationWorker(
+            api_key, video_title.replace(' ', '-'),
+            thumbnail_prompt, images_prompt,
+            intro_prompt, looping_prompt, outro_prompt,
+            loop_length, word_limit,
+            image_count, image_word_limit,
+            workflow_file, self.main_window.logger
+        )
         
         # Connect signals
         self.current_generation_worker.progress_update.connect(self.on_item_progress)
         self.current_generation_worker.operation_update.connect(self.on_item_operation)
-        self.current_generation_worker.finished.connect(self.on_item_finished)
+        self.current_generation_worker.finished.connect(self.on_item_generation_finished)
         self.current_generation_worker.error_occurred.connect(self.on_item_error)
         
         # Start generation for this item
@@ -164,7 +198,7 @@ class BulkGenerationWorker(QThread):
         self.progress_update.emit(total_progress)
         
         # Update row progress
-        self.row_status_update.emit(self.current_item_index, "Processing", progress)
+        self.row_status_update.emit(self.current_item_index, "Processing", str(progress))
     
     def on_item_operation(self, operation):
         """Handle operation update from individual item generation"""
@@ -172,13 +206,70 @@ class BulkGenerationWorker(QThread):
         message = f"[{self.current_item_index + 1}/{total_items}] {operation}"
         self.operation_update.emit(message)
     
-    def on_item_finished(self, message):
+    def on_item_generation_finished(self, description):
+        current_item = self.generation_data[self.current_item_index]
+        
+        with open(current_item['preset_path'], 'r') as f:
+            preset = json.load(f)
+        
+        video_title = preset['video_title']
+        video_path = os.path.join(video_title.replace(' ', '-'), "final_slideshow_with_audio.mp4")
+        thumbnail_path = os.path.join(video_title, "thumbnail.jpg")
+        title = video_title
+        category = current_item['category']
+        video_description = description + "\n\n" + preset['disclaimer']
+        privacy_status = "public"
+        made_for_kids = False
+        
+        if current_item['schedule'] == "":
+            publish_at = None
+        else : 
+            # Convert local datetime to UTC
+            import datetime
+            import pytz
+            
+            publish_at = datetime.datetime.fromisoformat(current_item['schedule'])
+            
+            # Get your local timezone
+            local_timezone = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
+            
+            # Make the datetime timezone-aware with your local timezone
+            aware_local_time = publish_at.replace(tzinfo=local_timezone)
+            
+            # Convert to UTC
+            publish_at = aware_local_time.astimezone(pytz.UTC)
+        
+        # self.youtube_upload_progress_bar.setValue(0)
+        # self.youtube_status_label.setText("Status: Preparing upload...")
+        
+        self.upload_thread = UploadThread(
+            credentials=current_item['credentials'], 
+            video_path=video_path, 
+            title=title, 
+            description=video_description, 
+            category=category, 
+            tags="", 
+            privacy_status=privacy_status, 
+            thumbnail_path=thumbnail_path, 
+            publish_at=publish_at, 
+            made_for_kids=made_for_kids
+        )
+        
+        # Connect signals
+        self.upload_thread.progress_signal.connect(self.on_item_progress)
+        self.upload_thread.finished_signal.connect(self.on_item_finished)
+        self.upload_thread.error_signal.connect(self.on_item_error)
+        
+        # Start the thread
+        self.upload_thread.start()
+    
+    def on_item_finished(self, url, video_id):
         """Handle completion of individual item generation"""
         total_items = len(self.generation_data)
-        self.operation_update.emit(f"✓ Completed item {self.current_item_index + 1}/{total_items}: {message}")
+        self.operation_update.emit(f"✓ Completed item {self.current_item_index + 1}/{total_items}")
         
         # Update row status to completed
-        self.row_status_update.emit(self.current_item_index, "Completed", 100)
+        self.row_status_update.emit(self.current_item_index, "Completed", url)
         self.successful_items += 1
         
         # Move to next item
@@ -194,7 +285,7 @@ class BulkGenerationWorker(QThread):
         error_msg = f"✗ Item {self.current_item_index + 1}/{total_items}: {error_message}"
         
         # Update row status to error
-        self.row_status_update.emit(self.current_item_index, "Error", 0)
+        self.row_status_update.emit(self.current_item_index, "Error", "0")
         
         # Log the error but don't stop the entire process
         self.operation_update.emit(error_msg)
@@ -209,69 +300,17 @@ class BulkGenerationWorker(QThread):
         QTimer.singleShot(100, self.process_next_item)  # Small delay before next item
 
 
-# Placeholder for your existing GenerationWorker
-class GenerationWorker(QThread):
-    """Your existing GenerationWorker - modify parameters as needed"""
-    progress_update = pyqtSignal(int)
-    operation_update = pyqtSignal(str)
-    finished = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
-    
-    def __init__(self, item_data):
-        super().__init__()
-        self.item_data = item_data
-        self.is_cancelled = False
-        # TODO: Modify constructor parameters according to your existing GenerationWorker
-    
-    def cancel(self):
-        """Cancel the current generation"""
-        self.is_cancelled = True
-    
-    def run(self):
-        """Your existing generation logic"""
-        # TODO: Replace this with your actual GenerationWorker implementation
-        # This is just a placeholder that includes some error simulation
-        try:
-            preset_path = self.item_data['preset_path']
-            workflow_path = self.item_data['workflow_path'] 
-            account = self.item_data['account']
-            
-            self.operation_update.emit(f"Processing with account: {account}")
-            
-            # Simulate your generation process with occasional errors for testing
-            # Remove this error simulation in your actual implementation
-            import random
-            if random.random() < 0.2:  # 20% chance of error for testing
-                raise Exception("Simulated random error for testing")
-            
-            # Simulate work
-            for i in range(100):
-                if self.is_cancelled:
-                    self.error_occurred.emit("Generation cancelled")
-                    return
-                    
-                time.sleep(0.05)  # Simulate work
-                self.progress_update.emit(i + 1)
-                if i % 20 == 0:
-                    self.operation_update.emit(f"Generation step {i + 1}/100")
-            
-            self.finished.emit("Generation completed successfully")
-            
-        except Exception as e:
-            self.error_occurred.emit(f"Generation failed: {str(e)}")
-
-
 class SettingsDialog(QDialog):
     """Dialog for editing generation settings"""
     
-    def __init__(self, parent=None, row_data=None):
+    def __init__(self, parent=None, row_data=None, accounts= []):
         super().__init__(parent)
         self.setWindowTitle("Edit Generation Settings")
         self.setModal(True)
         self.resize(500, 200)
         
         # Available accounts (you can modify this list)
-        self.available_accounts = ["Account1", "Account2", "Account3", "TestAccount", "MainAccount"]
+        self.available_accounts = accounts
         
         self.setup_ui()
         
@@ -280,6 +319,10 @@ class SettingsDialog(QDialog):
     
     def setup_ui(self):
         layout = QFormLayout()
+        
+        # Video Title
+        self.video_title_edit = QLineEdit()
+        self.video_title_edit.setPlaceholderText("Input the video title")
         
         # Preset file path
         self.preset_layout = QHBoxLayout()
@@ -301,13 +344,30 @@ class SettingsDialog(QDialog):
         
         # Account selection
         self.account_combo = QComboBox()
+        self.account_combo.setEditable(False)
         self.account_combo.addItems(self.available_accounts)
-        self.account_combo.setEditable(True)
+        
+        self.category_id_edit = QLineEdit()
+        self.category_id_edit.setPlaceholderText("Input the category id")
+        self.category_id_edit.setText('24')
+
+        # Scheduling
+        # schedule_layout = QHBoxLayout()
+        self.schedule_checkbox = QCheckBox("")
+        self.schedule_checkbox.stateChanged.connect(self.toggle_schedule)
+
+        self.schedule_datetime = QDateTimeEdit()
+        self.schedule_datetime.setMinimumDateTime(QDateTime.currentDateTime().addSecs(300))
+        self.schedule_datetime.setEnabled(False)
         
         # Add to layout
+        layout.addRow("Video Title:", self.video_title_edit)
         layout.addRow("Preset File:", self.preset_layout)
         layout.addRow("Workflow File:", self.workflow_layout)
         layout.addRow("Account:", self.account_combo)
+        layout.addRow("Category Id:", self.category_id_edit)
+        layout.addRow("Schedule publication:", self.schedule_checkbox)
+        layout.addRow("", self.schedule_datetime)
         
         # Dialog buttons
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -317,6 +377,9 @@ class SettingsDialog(QDialog):
         
         self.setLayout(layout)
     
+    def toggle_schedule(self, state):
+        self.schedule_datetime.setEnabled(state == Qt.Checked)
+        
     def browse_preset_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Preset File", "", "JSON Files (*.json)")
@@ -332,6 +395,7 @@ class SettingsDialog(QDialog):
     def load_data(self, row_data):
         self.preset_edit.setText(row_data.get('preset_path', ''))
         self.workflow_edit.setText(row_data.get('workflow_path', ''))
+        self.video_title_edit.setText(row_data.get('video_title', ''))
         account = row_data.get('account', '')
         index = self.account_combo.findText(account)
         if index >= 0:
@@ -340,25 +404,38 @@ class SettingsDialog(QDialog):
             self.account_combo.setCurrentText(account)
     
     def get_data(self):
+        publish_at = self.schedule_datetime.dateTime().toPyDateTime()
+        
         return {
+            'video_title': self.video_title_edit.text(),
             'preset_path': self.preset_edit.text(),
             'workflow_path': self.workflow_edit.text(),
-            'account': self.account_combo.currentText()
+            'account': self.account_combo.currentText(),
+            'category': self.category_id_edit.text(),
+            'schedule': publish_at.strftime("%Y-%m-%dT%H:%M:%S") if self.schedule_checkbox.isChecked() else ""
         }
-
 
 class BulkGenerationApp(QMainWindow):
     """Main application window"""
     
     def __init__(self):
         super().__init__()
+        self.logger, _ = log.setup_logger()
+        
         self.generation_worker = None
         self.setup_ui()
         self.setup_connections()
+        self.setup_timer_based_logging()
         
     def setup_ui(self):
         self.setWindowTitle("Bulk Generation Manager")
         self.setGeometry(100, 100, 1200, 800)
+        
+        self.account_manager = AccountManager(
+            accounts_file=os.path.join(current_directory, 'accounts.json'),
+            client_secrets_file=os.path.join(current_directory, 'google_auth.json'),
+            logger=self.logger
+        )
         
         # Central widget with splitter
         central_widget = QWidget()
@@ -377,7 +454,7 @@ class BulkGenerationApp(QMainWindow):
         splitter.addWidget(right_panel)
         
         # Set splitter proportions
-        splitter.setSizes([700, 500])
+        splitter.setSizes([900, 300])
     
     def create_left_panel(self):
         """Create the left panel with settings table"""
@@ -392,18 +469,24 @@ class BulkGenerationApp(QMainWindow):
         
         # Table
         self.settings_table = QTableWidget()
-        self.settings_table.setColumnCount(5)
-        self.settings_table.setHorizontalHeaderLabels(["Preset File", "Workflow File", "Account", "Status", "Progress"])
+        self.settings_table.setColumnCount(9)
+        self.settings_table.setHorizontalHeaderLabels(["Video Title", "Preset File", "Workflow File", "Account", "Category", "Scheduled Time", "Status", "Progress", "Video URL"])
         
         # Make table fill the width
         header = self.settings_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        self.settings_table.setColumnWidth(0, 200)
+        self.settings_table.setColumnWidth(1, 200)
+        self.settings_table.setColumnWidth(2, 200)
+        # header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        # header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        # header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         
         self.settings_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.settings_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.settings_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+
         self.settings_table.setAlternatingRowColors(True)
         layout.addWidget(self.settings_table)
         
@@ -452,10 +535,10 @@ class BulkGenerationApp(QMainWindow):
         logs_label.setFont(QFont("Arial", 10, QFont.Bold))
         layout.addWidget(logs_label)
         
-        self.logs_text = QTextEdit()
-        self.logs_text.setReadOnly(True)
-        self.logs_text.setMaximumHeight(300)
-        layout.addWidget(self.logs_text)
+        self.log_window = QTextEdit()
+        self.log_window.setReadOnly(True)
+        self.log_window.setMaximumHeight(300)
+        layout.addWidget(self.log_window)
         
         # Control buttons
         control_layout = QHBoxLayout()
@@ -485,9 +568,117 @@ class BulkGenerationApp(QMainWindow):
         # Table double-click to edit
         self.settings_table.doubleClicked.connect(self.edit_row)
     
+    def setup_timer_based_logging(self):
+        """Alternative approach using QTimer for even safer logging"""
+        from PyQt5.QtCore import QTimer
+        
+        # Create a timer to periodically check for log messages
+        self.log_timer = QTimer()
+        self.log_timer.timeout.connect(self.process_log_queue)
+        self.log_timer.start(100)  # Check every 100ms
+        
+        # Use a queue for log messages
+        import queue
+        self.log_message_queue = queue.Queue()
+        
+        # Create custom handler that uses the queue
+        class QueueLogHandler(logging.Handler):
+            def __init__(self, message_queue):
+                super().__init__()
+                self.message_queue = message_queue
+                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+                self.setFormatter(formatter)
+            
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    try:
+                        self.message_queue.put_nowait(msg)
+                    except queue.Full:
+                        pass  # Skip if queue is full
+                except Exception:
+                    pass
+        
+        # Add the queue handler to logger
+        self.queue_handler = QueueLogHandler(self.log_message_queue)
+        self.logger.addHandler(self.queue_handler)
+    
+    def process_log_queue(self):
+        """Process log messages from queue (called by timer)"""
+        messages_processed = 0
+        max_messages_per_update = 10  # Limit to prevent UI blocking
+        
+        try:
+            while messages_processed < max_messages_per_update:
+                try:
+                    message = self.log_message_queue.get_nowait()
+                    self.update_log(message)
+                    messages_processed += 1
+                except queue.Empty:
+                    break
+        except Exception:
+            pass  # Ignore errors in log processing
+    def update_log(self, message):
+        """Thread-safe log update method"""
+        try:
+            # Make sure we're in the main thread
+            if QThread.currentThread() != QApplication.instance().thread():
+                # If not in main thread, use QMetaObject.invokeMethod for thread safety
+                from PyQt5.QtCore import QMetaObject, Qt
+                QMetaObject.invokeMethod(
+                    self, 
+                    "_update_log_ui", 
+                    Qt.QueuedConnection,
+                    Q_ARG(str, message)
+                )
+            else:
+                self._update_log_ui(message)
+        except Exception:
+            pass  # Ignore UI update errors
+    
+    @pyqtSlot(str)
+    def _update_log_ui(self, message):
+        """Actually update the UI (must be called from main thread)"""
+        try:
+            self.log_window.append(message)
+            
+            # Limit the number of lines in log window to prevent memory issues
+            max_lines = 1000
+            if self.log_window.document().lineCount() > max_lines:
+                cursor = self.log_window.textCursor()
+                cursor.movePosition(cursor.Start)
+                cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)  # Remove first 100 lines
+                cursor.removeSelectedText()
+            
+            # Auto-scroll to bottom
+            scrollbar = self.log_window.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+            
+        except Exception:
+            pass  # Ignore UI errors
+    
+    def closeEvent(self, event):
+        """Clean up when closing the application"""
+        try:
+            # Stop the timer if using timer-based logging
+            if hasattr(self, 'log_timer'):
+                self.log_timer.stop()
+            
+            # Clean up logging handlers
+            if hasattr(self, 'logger'):
+                handlers = self.logger.handlers[:]
+                for handler in handlers:
+                    handler.close()
+                    self.logger.removeHandler(handler)
+            
+        except Exception:
+            pass
+        
+        event.accept()
+
     def add_row(self):
         """Add a new row to the settings table"""
-        dialog = SettingsDialog(self)
+        dialog = SettingsDialog(self, accounts=self.account_manager.get_accounts_list())
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
             self.add_table_row(data)
@@ -502,8 +693,15 @@ class BulkGenerationApp(QMainWindow):
         # Get current row data
         row_data = self.get_row_data(current_row)
         
-        dialog = SettingsDialog(self, row_data)
+        dialog = SettingsDialog(self, row_data, accounts=self.account_manager.get_accounts_list())
         if dialog.exec_() == QDialog.Accepted:
+            # Validate video title after dialog accepted
+            video_title = dialog.video_title_edit.text().strip()
+            if not video_title:
+                QMessageBox.warning(self, "Input Error", "Video title cannot be empty.")
+                # Optionally reopen the dialog
+                self.edit_row()  # or just return
+                return
             data = dialog.get_data()
             self.update_table_row(current_row, data)
     
@@ -523,11 +721,14 @@ class BulkGenerationApp(QMainWindow):
     def get_row_data(self, row):
         """Get data from a table row"""
         return {
-            'preset_path': self.settings_table.item(row, 0).text() if self.settings_table.item(row, 0) else '',
-            'workflow_path': self.settings_table.item(row, 1).text() if self.settings_table.item(row, 1) else '',
-            'account': self.settings_table.item(row, 2).text() if self.settings_table.item(row, 2) else '',
-            'status': self.settings_table.item(row, 3).text() if self.settings_table.item(row, 3) else 'Ready',
-            'progress': self.settings_table.item(row, 4).text() if self.settings_table.item(row, 4) else '0%'
+            'video_title': self.settings_table.item(row,0).text() if self.settings_table.item(row, 0) else '',
+            'preset_path': self.settings_table.item(row, 1).text() if self.settings_table.item(row, 1) else '',
+            'workflow_path': self.settings_table.item(row, 2).text() if self.settings_table.item(row, 2) else '',
+            'account': self.settings_table.item(row, 3).text() if self.settings_table.item(row, 3) else '',
+            'category': self.settings_table.item(row, 4).text() if self.settings_table.item(row, 4) else '',
+            'schedule': self.settings_table.item(row, 5).text() if self.settings_table.item(row, 5) else '',
+            'status': self.settings_table.item(row, 6).text() if self.settings_table.item(row, 6) else 'Ready',
+            'progress': self.settings_table.item(row, 7).text() if self.settings_table.item(row, 7) else '0%'
         }
     
     def add_table_row(self, data):
@@ -538,21 +739,25 @@ class BulkGenerationApp(QMainWindow):
     
     def update_table_row(self, row, data):
         """Update a table row with data"""
-        self.settings_table.setItem(row, 0, QTableWidgetItem(data['preset_path']))
-        self.settings_table.setItem(row, 1, QTableWidgetItem(data['workflow_path']))
-        self.settings_table.setItem(row, 2, QTableWidgetItem(data['account']))
+        self.settings_table.setItem(row, 0, QTableWidgetItem(data['video_title']))
+        self.settings_table.setItem(row, 1, QTableWidgetItem(data['preset_path']))
+        self.settings_table.setItem(row, 2, QTableWidgetItem(data['workflow_path']))
+        self.settings_table.setItem(row, 3, QTableWidgetItem(data['account']))
+        self.settings_table.setItem(row, 4, QTableWidgetItem(data['category']))
+        self.settings_table.setItem(row, 5, QTableWidgetItem(data['schedule']))
         
         # Set status and progress if not provided
         status = data.get('status', 'Ready')
         progress = data.get('progress', '0%')
-        self.settings_table.setItem(row, 3, QTableWidgetItem(status))
-        self.settings_table.setItem(row, 4, QTableWidgetItem(progress))
+        self.settings_table.setItem(row, 6, QTableWidgetItem(status))
+        self.settings_table.setItem(row, 7, QTableWidgetItem(progress))
+        self.settings_table.setItem(row, 8, QTableWidgetItem(""))
         
         # Make status and progress columns read-only
-        if self.settings_table.item(row, 3):
-            self.settings_table.item(row, 3).setFlags(self.settings_table.item(row, 3).flags() & ~Qt.ItemIsEditable)
-        if self.settings_table.item(row, 4):
-            self.settings_table.item(row, 4).setFlags(self.settings_table.item(row, 4).flags() & ~Qt.ItemIsEditable)
+        if self.settings_table.item(row, 6):
+            self.settings_table.item(row, 6).setFlags(self.settings_table.item(row, 6).flags() & ~Qt.ItemIsEditable)
+        if self.settings_table.item(row, 7):
+            self.settings_table.item(row, 7).setFlags(self.settings_table.item(row, 7).flags() & ~Qt.ItemIsEditable)
         
         # Color-code based on validation
         self.validate_and_color_row(row, data)
@@ -563,74 +768,113 @@ class BulkGenerationApp(QMainWindow):
         
         # Validate preset file
         if not data['preset_path'] or not os.path.exists(data['preset_path']):
-            self.settings_table.item(row, 0).setBackground(QColor(255, 200, 200))
+            self.settings_table.item(row, 1).setBackground(QColor(80, 40, 40))  # Dark red
             is_valid = False
         else:
             # Dummy content validation for preset
             if not self.validate_preset_content(data['preset_path']):
-                self.settings_table.item(row, 0).setBackground(QColor(255, 255, 200))
+                self.settings_table.item(row, 1).setBackground(QColor(80, 60, 30))  # Dark yellow/orange
                 is_valid = False
             else:
-                self.settings_table.item(row, 0).setBackground(QColor(200, 255, 200))
+                self.settings_table.item(row, 1).setBackground(QColor(40, 80, 40))  # Dark green
         
         # Validate workflow file
         if not data['workflow_path'] or not os.path.exists(data['workflow_path']):
-            self.settings_table.item(row, 1).setBackground(QColor(255, 200, 200))
+            self.settings_table.item(row, 2).setBackground(QColor(80, 40, 40))  # Dark red
             is_valid = False
         else:
             # Dummy content validation for workflow
             if not self.validate_workflow_content(data['workflow_path']):
-                self.settings_table.item(row, 1).setBackground(QColor(255, 255, 200))
+                self.settings_table.item(row, 2).setBackground(QColor(80, 60, 30))  # Dark yellow/orange
                 is_valid = False
             else:
-                self.settings_table.item(row, 1).setBackground(QColor(200, 255, 200))
+                self.settings_table.item(row, 2).setBackground(QColor(40, 80, 40))  # Dark green
         
         # Validate account
         if not data['account']:
-            self.settings_table.item(row, 2).setBackground(QColor(255, 200, 200))
+            self.settings_table.item(row, 3).setBackground(QColor(80, 40, 40))  # Dark red
             is_valid = False
         else:
-            self.settings_table.item(row, 2).setBackground(QColor(200, 255, 200))
+            self.settings_table.item(row, 3).setBackground(QColor(40, 80, 40))  # Dark green
         
         return is_valid
-    
+
     def update_row_status(self, row, status, progress=None):
         """Update the status and progress of a specific row"""
         if row < self.settings_table.rowCount():
             # Update status
             status_item = QTableWidgetItem(status)
             status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
-            self.settings_table.setItem(row, 3, status_item)
+            self.settings_table.setItem(row, 6, status_item)
+            
+            # Color code based on status
+            if status == "Completed":
+                self.settings_table.item(row, 6).setBackground(QColor(40, 80, 40))  # Dark green
+                self.settings_table.item(row, 7).setBackground(QColor(40, 80, 40))  # Dark green
+                self.settings_table.item(row, 8).setText(progress)
+                progress = "100"
+                
+            elif status == "Processing":
+                self.settings_table.item(row, 6).setBackground(QColor(80, 60, 30))  # Dark yellow/orange
+                self.settings_table.item(row, 7).setBackground(QColor(80, 60, 30))  # Dark yellow/orange
+            elif status in ["Error", "Error (Validation)"]:
+                self.settings_table.item(row, 6).setBackground(QColor(80, 40, 40))  # Dark red
+                self.settings_table.item(row, 7).setBackground(QColor(80, 40, 40))  # Dark red
+            elif status == "Validating":
+                self.settings_table.item(row, 6).setBackground(QColor(50, 50, 80))  # Dark blue
+                self.settings_table.item(row, 7).setBackground(QColor(50, 50, 80))  # Dark blue
             
             # Update progress if provided
             if progress is not None:
                 progress_text = f"{progress}%" if isinstance(progress, int) else str(progress)
                 progress_item = QTableWidgetItem(progress_text)
                 progress_item.setFlags(progress_item.flags() & ~Qt.ItemIsEditable)
-                self.settings_table.setItem(row, 4, progress_item)
-            
-            # Color code based on status
-            if status == "Completed":
-                self.settings_table.item(row, 3).setBackground(QColor(200, 255, 200))
-                self.settings_table.item(row, 4).setBackground(QColor(200, 255, 200))
-            elif status == "Processing":
-                self.settings_table.item(row, 3).setBackground(QColor(255, 255, 200))
-                self.settings_table.item(row, 4).setBackground(QColor(255, 255, 200))
-            elif status in ["Error", "Error (Validation)"]:
-                self.settings_table.item(row, 3).setBackground(QColor(255, 200, 200))
-                self.settings_table.item(row, 4).setBackground(QColor(255, 200, 200))
-            elif status == "Validating":
-                self.settings_table.item(row, 3).setBackground(QColor(200, 200, 255))
-                self.settings_table.item(row, 4).setBackground(QColor(200, 200, 255))
-    
+                self.settings_table.setItem(row, 7, progress_item)
+                
     def validate_preset_content(self, file_path):
-        """Dummy preset content validation - replace with actual logic"""
+        """Preset content validation"""
         try:
             with open(file_path, 'r') as f:
                 data = json.load(f)
-            # TODO: Add your actual preset validation logic here
-            # For now, just check if it's valid JSON
-            return isinstance(data, dict)
+            
+            if 'api_key' not in data:
+                return False
+            
+            if 'video_title' not in data:
+                return False
+            
+            if 'thumbnail_prompt' not in data:
+                return False
+            
+            if 'images_prompt' not in data:
+                return False
+            
+            if 'disclaimer' not in data:
+                return False
+            
+            if 'intro_prompt' not in data:
+                return False
+            
+            if 'looping_prompt' not in data:
+                return False
+            
+            if 'outro_prompt' not in data:
+                return False
+            
+            if 'loop_length' not in data:
+                return False
+            
+            if 'audio_word_limit' not in data:
+                return False
+            
+            if 'thumbnail_count' not in data:
+                return False
+            
+            if 'thumbnail_word_limit' not in data:
+                return False
+            
+            return True
+            # return isinstance(data, dict)
         except:
             return False
     
@@ -639,9 +883,30 @@ class BulkGenerationApp(QMainWindow):
         try:
             with open(file_path, 'r') as f:
                 data = json.load(f)
-            # TODO: Add your actual workflow validation logic here
-            # For now, just check if it's valid JSON
-            return isinstance(data, dict)
+                
+            prompt_exist = False
+            width_exist = False
+            height_exist = False
+            ksampler_exist = False
+            
+            for node_num, node in data.items():
+                if '_meta' not in node or 'title' not in node['_meta']:
+                    continue
+
+                if node['_meta']['title'] == 'prompt':
+                    prompt_exist = True
+                
+                if node['_meta']['title'] == 'width':
+                    width_exist = True
+
+                if node['_meta']['title'] == 'height':
+                    height_exist = True
+
+                if node['_meta']['title'] == 'KSampler':
+                    ksampler_exist = True
+            
+            return prompt_exist or width_exist or height_exist or ksampler_exist
+        
         except:
             return False
     
@@ -658,22 +923,29 @@ class BulkGenerationApp(QMainWindow):
                 df = pd.read_excel(file_path)
             else:
                 df = pd.read_csv(file_path)
+        
+            def safe_str(val):
+                return '' if pd.isna(val) else str(val)
             
             # Clear existing data
             self.settings_table.setRowCount(0)
             
             # Load data into table
             for _, row in df.iterrows():
-                data = {
-                    'preset_path': str(row.get('preset_path', '')),
-                    'workflow_path': str(row.get('workflow_path', '')),
-                    'account': str(row.get('account', '')),
+                data =  {
+                    'video_title': safe_str(row.get('video_title')),
+                    'preset_path': safe_str(row.get('preset_path')),
+                    'workflow_path': safe_str(row.get('workflow_path')),
+                    'account': safe_str(row.get('account')),
+                    'category': safe_str(row.get('category')),
+                    'schedule': safe_str(row.get('schedule')),
                     'status': 'Ready',
                     'progress': '0%'
                 }
+                print(row.get('schedule', ''))
                 self.add_table_row(data)
             
-            self.log_message(f"Successfully loaded {len(df)} rows from {file_path}")
+            self.logger.info(f"Successfully loaded {len(df)} rows from {file_path}")
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load data: {str(e)}")
@@ -696,9 +968,12 @@ class BulkGenerationApp(QMainWindow):
                 row_data = self.get_row_data(row)
                 # Only save the core data, not status/progress
                 data.append({
+                    'video_title': row_data['video_title'],
                     'preset_path': row_data['preset_path'],
                     'workflow_path': row_data['workflow_path'],
-                    'account': row_data['account']
+                    'account': row_data['account'],
+                    'category': row_data['category'],
+                    'schedule': row_data['schedule'],
                 })
             
             df = pd.DataFrame(data)
@@ -708,7 +983,7 @@ class BulkGenerationApp(QMainWindow):
             else:
                 df.to_csv(file_path, index=False)
             
-            self.log_message(f"Successfully saved {len(data)} rows to {file_path}")
+            self.logger.info(f"Successfully saved {len(data)} rows to {file_path}")
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save data: {str(e)}")
@@ -723,6 +998,7 @@ class BulkGenerationApp(QMainWindow):
         generation_data = []
         for row in range(self.settings_table.rowCount()):
             data = self.get_row_data(row)
+            data['credentials'] = self.account_manager.get_account_credentials(data['account'])
             generation_data.append(data)
         
         if not generation_data:
@@ -743,13 +1019,13 @@ class BulkGenerationApp(QMainWindow):
         self.bulk_generation_worker.row_status_update.connect(self.update_row_status)
         
         self.bulk_generation_worker.start()
-        self.log_message(f"Started bulk generation for {len(generation_data)} items")
+        self.logger.info(f"Started bulk generation for {len(generation_data)} items")
     
     def cancel_generation(self):
         """Cancel the ongoing generation"""
         if hasattr(self, 'bulk_generation_worker') and self.bulk_generation_worker and self.bulk_generation_worker.isRunning():
             self.bulk_generation_worker.cancel()
-            self.log_message("Cancellation requested...")
+            self.logger.info("Cancellation requested...")
     
     def update_progress(self, value):
         """Update the progress bar"""
@@ -758,17 +1034,17 @@ class BulkGenerationApp(QMainWindow):
     def update_status(self, message):
         """Update the status label and log"""
         self.status_label.setText(message)
-        self.log_message(message)
+        self.logger.info(message)
     
     def generation_finished(self, message):
         """Handle generation completion"""
-        self.log_message(f"Generation finished: {message}")
+        self.logger.info(f"Generation finished: {message}")
         self.status_label.setText("Generation completed")
         self.reset_generation_ui()
     
     def generation_error(self, error_message):
         """Handle generation error"""
-        self.log_message(f"Error: {error_message}")
+        self.logger.info(f"Error: {error_message}")
         self.status_label.setText("Generation failed")
         QMessageBox.critical(self, "Generation Error", error_message)
         self.reset_generation_ui()
@@ -780,13 +1056,6 @@ class BulkGenerationApp(QMainWindow):
         self.progress_bar.setVisible(False)
         if hasattr(self, 'bulk_generation_worker'):
             self.bulk_generation_worker = None
-    
-    def log_message(self, message):
-        """Add message to logs"""
-        timestamp = time.strftime("%H:%M:%S")
-        self.logs_text.append(f"[{timestamp}] {message}")
-        # Auto-scroll to bottom
-        self.logs_text.moveCursor(self.logs_text.textCursor().End)
 
 
 def main():
