@@ -430,47 +430,47 @@ class GenerationWorker(QThread):
             self._log_step_time("Script Generation", step_start)
 
             # 3. Generate the thumbnail Image
-            step_start = time.time()
-            self.logger.info(f"Step 3/6: Generating Thumbnail")
-            self.operation_update.emit("Generating Thumbnail")
+            # step_start = time.time()
+            # self.logger.info(f"Step 3/6: Generating Thumbnail")
+            # self.operation_update.emit("Generating Thumbnail")
 
-            try:
-                data = {
-                    "prompt": self.thumbnail_prompt,
-                    "workflow": self.comfy_workflow,
-                    "width": 1280,
-                    "height": 720,
-                    "format": "base64"
-                }
+            # try:
+            #     data = {
+            #         "prompt": self.thumbnail_prompt,
+            #         "workflow": self.comfy_workflow,
+            #         "width": 1280,
+            #         "height": 720,
+            #         "format": "base64"
+            #     }
                 
-                result = self._safe_requests_call("http://localhost:5000/generate", data, timeout=300)
-                images = result.get('images', {})
+            #     result = self._safe_requests_call("http://localhost:5000/generate", data, timeout=300)
+            #     images = result.get('images', {})
                 
-                # Get the first image from the first node
-                image_data = None
-                for node_id, node_images in images.items():
-                    if node_images:
-                        image_data = node_images[0]
-                        break
+            #     # Get the first image from the first node
+            #     image_data = None
+            #     for node_id, node_images in images.items():
+            #         if node_images:
+            #             image_data = node_images[0]
+            #             break
                         
-                if not image_data:
-                    raise Exception("No image data found in response")
+            #     if not image_data:
+            #         raise Exception("No image data found in response")
                 
-                with open(os.path.join(output_dir, 'thumbnail.jpg'), 'wb') as f:
-                    f.write(base64.b64decode(image_data))
+            #     with open(os.path.join(output_dir, 'thumbnail.jpg'), 'wb') as f:
+            #         f.write(base64.b64decode(image_data))
 
-                self.logger.info(f"Thumbnail image generated successfully!")
-                self.progress_update.emit(25)
+            #     self.logger.info(f"Thumbnail image generated successfully!")
+            #     self.progress_update.emit(25)
                 
-                # Clear image data from memory
-                del image_data
-                gc.collect()
+            #     # Clear image data from memory
+            #     del image_data
+            #     gc.collect()
                 
-            except Exception as e:
-                self.logger.error(f"Failed to generate thumbnail: {e}")
-                raise
+            # except Exception as e:
+            #     self.logger.error(f"Failed to generate thumbnail: {e}")
+            #     raise
             
-            self._log_step_time("Thumbnail Generation", step_start)
+            # self._log_step_time("Thumbnail Generation", step_start)
 
             # 4. Generate the images based on the script
             step_start = time.time()
@@ -482,6 +482,9 @@ class GenerationWorker(QThread):
                 chunks_count=self.image_count,
                 word_limit=self.image_word_limit
             )
+            
+            print(image_chunks)
+            return
 
             for idx, chunk in enumerate(image_chunks):
                 self._check_cancelled()

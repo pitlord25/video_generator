@@ -931,6 +931,8 @@ class VideoGeneratorApp(QMainWindow):
         self.current_operation_label.setText("Generation completed")
         self.progress_bar.setValue(100)
         
+        return
+        
         # Upload Progress Start
         if not self.credentials or not self.credentials.valid:
             QMessageBox.warning(self, "Warning", "Please authenticate with YouTube first.")
