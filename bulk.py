@@ -18,6 +18,7 @@ from PyQt5.QtGui import QPalette, QColor, QFont
 from accounts import AccountManager
 from worker import GenerationWorker
 from uploader import UploadThread
+from utils import title_to_safe_folder_name, safe_title
 import datetime
 import traceback
 import logging
@@ -140,6 +141,23 @@ class BulkGenerationWorker(QThread):
         image_word_limit = data['thumbnail_word_limit']
         
         workflow_file = current_item['workflow_path']
+
+        thumbnail_prompt = thumbnail_prompt.replace('$title', video_title)
+        intro_prompt = intro_prompt.replace('$title', video_title)
+        looping_prompt = looping_prompt.replace('$title', video_title)
+        outro_prompt = outro_prompt.replace('$title', video_title)
+        images_prompt = images_prompt.replace('$title', video_title)
+        
+        if 'variables' in data:
+            for key in data['variables']:
+                keyword = f"${key}"
+                value = data['variables'][key]
+                thumbnail_prompt = thumbnail_prompt.replace(keyword, value)
+                intro_prompt = intro_prompt.replace(keyword, value)
+                looping_prompt = looping_prompt.replace(keyword, value)
+                outro_prompt = outro_prompt.replace(keyword, value)
+                images_prompt = images_prompt.replace(keyword, value)
+
         # Create GenerationWorker for this item (you'll modify the parameters)
         self.current_generation_worker = self.worker = GenerationWorker(
             api_key, video_title.replace(' ', '-'),
@@ -213,7 +231,7 @@ class BulkGenerationWorker(QThread):
             preset = json.load(f)
         
         video_title = current_item['video_title']
-        video_path = os.path.join(video_title.replace(' ', '-'), "final_slideshow_with_audio.mp4")
+        video_path = os.path.join(title_to_safe_folder_name(video_title.replace(' ', '-')), "final_slideshow_with_audio.mp4")
         thumbnail_path = os.path.join(video_title, "thumbnail.jpg")
         title = video_title
         category = current_item['category']
@@ -241,11 +259,15 @@ class BulkGenerationWorker(QThread):
         
         # self.youtube_upload_progress_bar.setValue(0)
         # self.youtube_status_label.setText("Status: Preparing upload...")
+
+        # print(current_item)
+        # print(safe_title(title))
         
         self.upload_thread = UploadThread(
             credentials=current_item['credentials'], 
             video_path=video_path, 
-            title=title, 
+            title=title[:80], 
+            # title=safe_title(title), 
             description=video_description, 
             category=category, 
             tags="", 

@@ -1,5 +1,5 @@
 from PyQt5.QtCore import QThread, pyqtSignal
-from utils import OpenAIHelper, create_output_directory, sanitize_for_script, split_text_into_chunks, get_first_paragraph, split_text_into_chunks_image
+from utils import OpenAIHelper, create_output_directory, sanitize_for_script, split_text_into_chunks, get_first_paragraph, split_text_into_chunks_image, title_to_safe_folder_name
 from logging import Logger
 import os, shutil, subprocess, random, math, traceback, json, requests, base64
 import time
@@ -334,7 +334,7 @@ class GenerationWorker(QThread):
             step_start = time.time()
             self.logger.info(f"Step 1/6: Initializing")
             self.operation_update.emit("Initializing")
-            output_dir = create_output_directory(self.video_title)
+            output_dir = create_output_directory(title_to_safe_folder_name(self.video_title))
 
             # Check if folder exists
             if not os.path.exists(temp_folder_path):

@@ -5,7 +5,7 @@ os.chdir(current_directory)
 
 import json
 import log
-from utils import get_default_settings
+from utils import get_default_settings, title_to_safe_folder_name
 from worker import GenerationWorker
 from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtCore import Qt, QDateTime
@@ -936,7 +936,7 @@ class VideoGeneratorApp(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please authenticate with YouTube first.")
             return
         
-        video_path = os.path.join(self.video_title, "final_slideshow_with_audio.mp4")
+        video_path = os.path.join(title_to_safe_folder_name(self.video_title), "final_slideshow_with_audio.mp4")
         thumbnail_path = os.path.join(self.video_title, "thumbnail.jpg")
         title = self.video_title_input.text()
         category = self.category_id_edit.text()
@@ -1070,7 +1070,6 @@ class VideoGeneratorApp(QMainWindow):
         # Update status label
         if self.variables:
             count = len(self.variables)
-            print(self.variables)
             self.logger.info(f"{count} variable{'s' if count > 1 else ''} defined")
 
     def import_workflow_json(self):

@@ -12,3 +12,4 @@ token.pickle
 google_auth.json
 presets
 workflows
+*.spec

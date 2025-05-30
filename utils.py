@@ -7,6 +7,8 @@ import random
 from typing import Literal, Dict, Any, Optional
 from openai import OpenAI
 from PIL import Image
+import re
+import unicodedata
 
 
 class OpenAIHelper:
@@ -236,7 +238,6 @@ def split_text_into_chunks(
     Returns:
         List of text chunks
     """
-    import re
 
     # Clean the text (similar to JavaScript version)
     raw = text
@@ -287,8 +288,7 @@ def split_text_into_chunks_image(
     Returns:
         List of text chunks
     """
-    import re
-
+    
     # Clean the text (similar to JavaScript version)
     raw = text
     cleaned = raw.replace("\\n", "\n")  # Convert literal \n into real newlines
@@ -297,16 +297,12 @@ def split_text_into_chunks_image(
 
     # Split into sentences
     sentences = re.findall(r'[^\.!\?]+[\.!\?]+(?:\s|$)', cleaned) or []
-    
-    print(sentences)
-
     chunks = []
     current_words = []
 
     for sentence in sentences:
         sentence = sentence.strip()
         sentence_words = sentence.split()
-        print(sentence_words)
 
         if len(current_words) + len(sentence_words) <= word_limit:
             current_words.extend(sentence_words)
@@ -344,3 +340,42 @@ def get_first_paragraph(text):
 
     # Return empty string if no paragraphs found
     return ""
+
+def title_to_safe_folder_name(title: str) -> str:
+    # Normalize unicode characters (e.g. é → e, — → -)
+    title = unicodedata.normalize("NFKD", title)
+    
+    # Replace smart quotes and em/en dashes with ASCII equivalents
+    title = title.replace("’", "'").replace("‘", "'")\
+                 .replace("“", '"').replace("”", '"')\
+                 .replace("—", "-").replace("–", "-")
+    
+    # Replace all non-alphanumeric characters with underscores or dashes
+    title = re.sub(r"[^a-zA-Z0-9-_ ]", "", title)
+
+    # Replace whitespace with dashes
+    title = re.sub(r"\s+", "-", title.strip())
+
+    # Optional: truncate very long names (Windows limit ~255 characters)
+    return title[:150]
+
+def safe_title(title: str) -> str:
+    """
+    Sanitize title for use in file names.
+    
+    Args:
+        title: The title to sanitize.
+        
+    Returns:
+        A sanitized version of the title.
+    """
+    # Normalize unicode characters (e.g. é → e, — → -)
+    # title = unicodedata.normalize("NFKD", title)
+    
+    # Replace smart quotes and em/en dashes with ASCII equivalents
+    title = title.replace("’", "'").replace("‘", "'")\
+                 .replace("“", '"').replace("”", '"')\
+                 .replace("—", "-").replace("–", "-")
+    # Remove invalid characters for file names
+    # return re.sub(r'[<>:"/\\|?*]', '', title).strip()
+    return title.strip()[:80]
