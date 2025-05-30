@@ -212,7 +212,7 @@ class BulkGenerationWorker(QThread):
         with open(current_item['preset_path'], 'r') as f:
             preset = json.load(f)
         
-        video_title = preset['video_title']
+        video_title = current_item['video_title']
         video_path = os.path.join(video_title.replace(' ', '-'), "final_slideshow_with_audio.mp4")
         thumbnail_path = os.path.join(video_title, "thumbnail.jpg")
         title = video_title
@@ -838,9 +838,6 @@ class BulkGenerationApp(QMainWindow):
                 data = json.load(f)
             
             if 'api_key' not in data:
-                return False
-            
-            if 'video_title' not in data:
                 return False
             
             if 'thumbnail_prompt' not in data:
