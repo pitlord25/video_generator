@@ -232,7 +232,7 @@ class BulkGenerationWorker(QThread):
         
         video_title = current_item['video_title']
         video_path = os.path.join(title_to_safe_folder_name(video_title.replace(' ', '-')), "final_slideshow_with_audio.mp4")
-        thumbnail_path = os.path.join(video_title, "thumbnail.jpg")
+        thumbnail_path =os.path.join(title_to_safe_folder_name(video_title.replace(' ', '-')), "thumbnail.jpg")
         title = video_title
         category = current_item['category']
         video_description = description + "\n\n" + preset['disclaimer']
